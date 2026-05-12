@@ -11,24 +11,23 @@ public sealed class LgogService
         _wsl = wsl;
     }
 
-    public Task<(int ExitCode, string StdOut, string StdErr)> CheckLoginStatusAsync(AppSettings settings, CancellationToken ct = default) =>
-        _wsl.RunAsync(settings.WslDistro, $"{settings.LgogBinary} --check-login-status", ct);
+    public Task<ProcessResult> CheckLoginStatusAsync(AppSettings s) =>
+        _wsl.RunAsync(s.WslDistro, $"{s.LgogBinary} --check-login-status");
 
-    public Task<(int ExitCode, string StdOut, string StdErr)> LoginAsync(AppSettings settings, CancellationToken ct = default) =>
-        _wsl.RunAsync(settings.WslDistro, $"{settings.LgogBinary} --login", ct);
+    public Task<ProcessResult> GuiLoginAsync(AppSettings s) =>
+        _wsl.RunAsync(s.WslDistro, $"{s.LgogBinary} --gui-login");
 
-    public Task<(int ExitCode, string StdOut, string StdErr)> GuiLoginAsync(AppSettings settings, CancellationToken ct = default) =>
-        _wsl.RunAsync(settings.WslDistro, $"{settings.LgogBinary} --gui-login", ct);
+    public Task<ProcessResult> UpdateCacheAsync(AppSettings s) =>
+        _wsl.RunAsync(s.WslDistro, $"{s.LgogBinary} --update-cache");
 
-    public Task<(int ExitCode, string StdOut, string StdErr)> UpdateCacheAsync(AppSettings settings, CancellationToken ct = default) =>
-        _wsl.RunAsync(settings.WslDistro, $"{settings.LgogBinary} --update-cache", ct);
-
-    public Task<(int ExitCode, string StdOut, string StdErr)> ListAsync(AppSettings settings, CancellationToken ct = default) =>
-        _wsl.RunAsync(settings.WslDistro, $"{settings.LgogBinary} --list", ct);
-
-    public Task<(int ExitCode, string StdOut, string StdErr)> DownloadGameAsync(AppSettings settings, string slug, bool includeExtras, CancellationToken ct = default)
+    public Task<ProcessResult> DownloadGameAsync(AppSettings s, string slug, bool extras, bool extrasOnly = false)
     {
-        var extrasArg = includeExtras ? string.Empty : " --exclude extras";
-        return _wsl.RunAsync(settings.WslDistro, $"{settings.LgogBinary} --download --game {slug}{extrasArg}", ct);
+        var cmd = extrasOnly
+            ? $"{s.LgogBinary} --download --game {slug} --no-installers --extras"
+            : extras
+                ? $"{s.LgogBinary} --download --game {slug} --extras"
+                : $"{s.LgogBinary} --download --game {slug}";
+
+        return _wsl.RunAsync(s.WslDistro, cmd);
     }
 }

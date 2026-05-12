@@ -30,9 +30,7 @@ public sealed partial class LibraryView : Page
     {
         LoadingRing.IsActive = true;
         await _vm.ScanLibraryCommand.ExecuteAsync(null);
-        GamesRepeater.ItemsSource = _vm.Games;
-        StatusLabel.Text = _vm.Status;
-        GameCountLabel.Text = _vm.GameCount > 0 ? $"{_vm.GameCount} games" : "";
+        RefreshGrid();
         LoadingRing.IsActive = false;
     }
 
@@ -40,9 +38,7 @@ public sealed partial class LibraryView : Page
     {
         LoadingRing.IsActive = true;
         await _vm.SyncCacheCommand.ExecuteAsync(null);
-        GamesRepeater.ItemsSource = _vm.Games;
-        StatusLabel.Text = _vm.Status;
-        GameCountLabel.Text = _vm.GameCount > 0 ? $"{_vm.GameCount} games" : "";
+        RefreshGrid();
         LoadingRing.IsActive = false;
     }
 
@@ -50,9 +46,7 @@ public sealed partial class LibraryView : Page
     {
         LoadingRing.IsActive = true;
         await _vm.RefreshLibraryCommand.ExecuteAsync(null);
-        GamesRepeater.ItemsSource = _vm.Games;
-        StatusLabel.Text = _vm.Status;
-        GameCountLabel.Text = _vm.GameCount > 0 ? $"{_vm.GameCount} games" : "";
+        RefreshGrid();
         LoadingRing.IsActive = false;
     }
 
@@ -66,12 +60,28 @@ public sealed partial class LibraryView : Page
 
     private async void DownloadButton_Click(object sender, Microsoft.UI.Xaml.RoutedEventArgs e)
     {
-        if (sender is Button btn && btn.Tag is string slug)
+        if (sender is Microsoft.UI.Xaml.Controls.Button btn && btn.Tag is string slug)
         {
             var game = _vm.Games.FirstOrDefault(g => g.Slug == slug)
                        ?? new GameState { Slug = slug, Title = slug };
             await _vm.DownloadGameCommand.ExecuteAsync(game);
             StatusLabel.Text = _vm.Status;
         }
+    }
+
+    private void GameCard_Tapped(object sender, Microsoft.UI.Xaml.Input.TappedRoutedEventArgs e)
+    {
+        if (sender is Microsoft.UI.Xaml.FrameworkElement el && el.DataContext is GameState game)
+        {
+            Frame.Navigate(typeof(GameDetailsView), game);
+        }
+    }
+
+    private void RefreshGrid()
+    {
+        GamesRepeater.ItemsSource = null;
+        GamesRepeater.ItemsSource = _vm.Games;
+        StatusLabel.Text = _vm.Status;
+        GameCountLabel.Text = _vm.GameCount > 0 ? $"{_vm.GameCount} games" : "";
     }
 }

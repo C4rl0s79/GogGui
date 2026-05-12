@@ -1,0 +1,142 @@
+<Page
+    x:Class="GOGGUI.Views.GameDetailsView"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+
+    <Grid>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+        </Grid.RowDefinitions>
+
+        <!-- Header -->
+        <Border Grid.Row="0" Background="{ThemeResource LayerFillColorDefaultBrush}" Padding="24,16">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+                <StackPanel Grid.Column="0" Spacing="4">
+                    <TextBlock x:Name="TitleLabel" FontSize="26" FontWeight="Bold" TextWrapping="Wrap"/>
+                    <TextBlock x:Name="SlugLabel" FontSize="12" Opacity="0.5"/>
+                    <TextBlock x:Name="StatusLabel" FontSize="13"
+                               Foreground="{ThemeResource AccentTextFillColorPrimaryBrush}"/>
+                </StackPanel>
+                <ProgressRing x:Name="LoadingRing" Grid.Column="1"
+                              IsActive="False" Width="28" Height="28"/>
+            </Grid>
+        </Border>
+
+        <!-- Content -->
+        <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto">
+            <StackPanel Padding="24" Spacing="24" MaxWidth="900">
+
+                <!-- Actions -->
+                <StackPanel Spacing="8">
+                    <TextBlock Text="Actions" FontSize="16" FontWeight="SemiBold"/>
+                    <StackPanel Orientation="Horizontal" Spacing="10">
+                        <Button x:Name="DownloadButton"
+                                Content="⬇️ Download Game"
+                                Style="{ThemeResource AccentButtonStyle}"
+                                Click="DownloadButton_Click"/>
+                        <Button x:Name="DownloadExtrasButton"
+                                Content="🎨 Download Extras Only"
+                                Click="DownloadExtrasButton_Click"/>
+                        <Button x:Name="OpenFolderButton"
+                                Content="📁 Open Folder"
+                                Click="OpenFolderButton_Click"/>
+                        <ToggleSwitch x:Name="ExtrasToggle"
+                                      Header="Include extras"
+                                      OffContent="No" OnContent="Yes"/>
+                    </StackPanel>
+                </StackPanel>
+
+                <!-- Local files -->
+                <StackPanel Spacing="8">
+                    <StackPanel Orientation="Horizontal" Spacing="12">
+                        <TextBlock Text="Local Files" FontSize="16" FontWeight="SemiBold"/>
+                        <TextBlock x:Name="TotalSizeLabel" FontSize="13" Opacity="0.6"
+                                   VerticalAlignment="Center"/>
+                    </StackPanel>
+                    <ListView x:Name="LocalFilesList"
+                              SelectionMode="None"
+                              MaxHeight="200">
+                        <ListView.ItemTemplate>
+                            <DataTemplate>
+                                <StackPanel Orientation="Horizontal" Spacing="12" Padding="0,4">
+                                    <TextBlock Text="{Binding Name}" FontSize="13"/>
+                                    <TextBlock Text="{Binding LengthHuman}" FontSize="12" Opacity="0.6"/>
+                                </StackPanel>
+                            </DataTemplate>
+                        </ListView.ItemTemplate>
+                    </ListView>
+                    <TextBlock x:Name="NoFilesLabel" Text="No local installer files found."
+                               FontSize="13" Opacity="0.5" Visibility="Collapsed"/>
+                </StackPanel>
+
+                <!-- Metadata -->
+                <StackPanel x:Name="MetadataPanel" Spacing="8" Visibility="Collapsed">
+                    <TextBlock Text="Game Info" FontSize="16" FontWeight="SemiBold"/>
+                    <TextBlock x:Name="DescriptionLabel" TextWrapping="Wrap"
+                               FontSize="13" Opacity="0.85" MaxLines="6"/>
+
+                    <!-- Installers from JSON -->
+                    <TextBlock Text="Available Installers" FontSize="14" FontWeight="SemiBold"
+                               Margin="0,8,0,0"/>
+                    <ListView x:Name="InstallersList" SelectionMode="None" MaxHeight="200">
+                        <ListView.ItemTemplate>
+                            <DataTemplate>
+                                <Grid Padding="0,4">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="Auto"/>
+                                        <ColumnDefinition Width="Auto"/>
+                                        <ColumnDefinition Width="Auto"/>
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock Grid.Column="0" Text="{Binding Name}" FontSize="13"/>
+                                    <TextBlock Grid.Column="1" Text="{Binding Os}" FontSize="12"
+                                               Opacity="0.6" Margin="12,0"/>
+                                    <TextBlock Grid.Column="2" Text="{Binding Language}" FontSize="12"
+                                               Opacity="0.6" Margin="0,0,12,0"/>
+                                    <TextBlock Grid.Column="3" Text="{Binding TotalSizeHuman}"
+                                               FontSize="12" Opacity="0.6"/>
+                                </Grid>
+                            </DataTemplate>
+                        </ListView.ItemTemplate>
+                    </ListView>
+
+                    <!-- Extras from JSON -->
+                    <TextBlock Text="Extras" FontSize="14" FontWeight="SemiBold"
+                               Margin="0,8,0,0"/>
+                    <ListView x:Name="ExtrasList" SelectionMode="None" MaxHeight="160">
+                        <ListView.ItemTemplate>
+                            <DataTemplate>
+                                <StackPanel Orientation="Horizontal" Spacing="12" Padding="0,4">
+                                    <TextBlock Text="{Binding Name}" FontSize="13"/>
+                                    <TextBlock Text="{Binding Type}" FontSize="12" Opacity="0.5"/>
+                                    <TextBlock Text="{Binding TotalSizeHuman}" FontSize="12" Opacity="0.5"/>
+                                </StackPanel>
+                            </DataTemplate>
+                        </ListView.ItemTemplate>
+                    </ListView>
+
+                    <!-- DLCs -->
+                    <TextBlock Text="DLCs" FontSize="14" FontWeight="SemiBold"
+                               Margin="0,8,0,0"/>
+                    <ListView x:Name="DlcList" SelectionMode="None" MaxHeight="160">
+                        <ListView.ItemTemplate>
+                            <DataTemplate>
+                                <TextBlock Text="{Binding Title}" FontSize="13" Padding="0,4"/>
+                            </DataTemplate>
+                        </ListView.ItemTemplate>
+                    </ListView>
+                </StackPanel>
+
+                <TextBlock x:Name="NoMetadataLabel"
+                           Text="No metadata found. Run 'Update Metadata' from the Library view."
+                           FontSize="13" Opacity="0.5"/>
+
+            </StackPanel>
+        </ScrollViewer>
+    </Grid>
+</Page>
