@@ -26,9 +26,12 @@ jobs:
       - name: Build Core
         run: dotnet build src/GOGGUI.Core/GOGGUI.Core.csproj --no-restore --configuration Release
 
-      - name: Run tests (if any)
-        run: dotnet test src/GOGGUI.Core/GOGGUI.Core.csproj --no-build --configuration Release --verbosity normal
-        continue-on-error: true
+      - name: Upload Core artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: GOGGUI-Core
+          path: src/GOGGUI.Core/bin/Release/
+          if-no-files-found: warn
 
   build-app:
     name: Build GOGGUI.App (WinUI 3)
@@ -47,22 +50,9 @@ jobs:
       - name: Add msbuild to PATH
         uses: microsoft/setup-msbuild@v2
 
-      - name: Install Windows App SDK via NuGet
-        run: |
-          dotnet workload update
-          dotnet workload install wasm-tools
-        shell: pwsh
-        continue-on-error: true
-
-      - name: Restore NuGet packages
-        run: |
-          nuget restore src/GOGGUI.App/GOGGUI.App.csproj -PackagesDirectory packages
-        shell: pwsh
-        continue-on-error: true
-
-      - name: Restore App dependencies via dotnet
+      - name: Restore App (dotnet restore pulls WindowsAppSDK from NuGet)
         run: dotnet restore src/GOGGUI.App/GOGGUI.App.csproj
-        continue-on-error: true
+        shell: pwsh
 
       - name: Build App with MSBuild
         run: |
@@ -70,13 +60,21 @@ jobs:
             /p:Configuration=Release `
             /p:Platform=x64 `
             /p:AppxPackageSigningEnabled=false `
-            /restore
+            /p:GenerateAppxPackageOnBuild=false `
+            /p:WindowsAppSDKSelfContained=true `
+            /nologo
+        shell: pwsh
+
+      - name: List build output (debug)
+        run: |
+          Write-Host "=== bin folder ==="
+          Get-ChildItem -Recurse src/GOGGUI.App/bin | Select-Object FullName, Length | Format-Table -AutoSize
         shell: pwsh
         continue-on-error: true
 
-      - name: Upload build artifacts
+      - name: Upload App artifact
         uses: actions/upload-artifact@v4
         with:
-          name: GOGGUI-build
-          path: src/GOGGUI.App/bin/x64/Release/
+          name: GOGGUI-App
+          path: src/GOGGUI.App/bin/**/*.exe
           if-no-files-found: warn
