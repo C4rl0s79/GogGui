@@ -6,26 +6,25 @@
 
     <Grid>
         <Grid.RowDefinitions>
-            <RowDefinition Height="Auto"/>
             <RowDefinition Height="*"/>
-            <RowDefinition Height="Auto"/>
         </Grid.RowDefinitions>
 
-        <!-- Header -->
-        <StackPanel Grid.Row="0" Padding="20,15" Background="{ThemeResource LayerFillColorDefaultBrush}">
-            <TextBlock Text="GOGGUI" FontSize="32" FontWeight="Bold"/>
-            <TextBlock Text="Library Manager for lgogdownloader" FontSize="14" Opacity="0.7" Margin="0,4,0,0"/>
-        </StackPanel>
+        <NavigationView x:Name="NavView"
+                        PaneDisplayMode="Left"
+                        IsBackButtonVisible="Collapsed"
+                        SelectionChanged="NavView_SelectionChanged">
 
-        <!-- Main Content -->
-        <Frame Grid.Row="1" x:Name="ContentFrame" NavigationFailed="ContentFrame_NavigationFailed"/>
+            <NavigationView.MenuItems>
+                <NavigationViewItem Tag="library" Icon="Library" Content="Library"/>
+                <NavigationViewItem Tag="settings" Icon="Setting" Content="Settings"/>
+            </NavigationView.MenuItems>
 
-        <!-- Status Bar -->
-        <StackPanel Grid.Row="2" Padding="20,8" Background="{ThemeResource LayerFillColorDefaultBrush}">
-            <StackPanel Orientation="Horizontal" Spacing="15">
-                <TextBlock x:Name="StatusLabel" Text="Ready"/>
-                <TextBlock x:Name="LoginStatusLabel" Text="Login: Not checked" Foreground="Orange"/>
-            </StackPanel>
-        </StackPanel>
+            <NavigationView.FooterMenuItems>
+                <NavigationViewItem Tag="settings" Icon="Setting" Content="Settings"/>
+            </NavigationView.FooterMenuItems>
+
+            <Frame x:Name="ContentFrame" NavigationFailed="ContentFrame_NavigationFailed"/>
+
+        </NavigationView>
     </Grid>
 </Window>

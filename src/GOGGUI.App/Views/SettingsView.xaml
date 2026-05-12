@@ -1,0 +1,85 @@
+<Page
+    x:Class="GOGGUI.Views.SettingsView"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+
+    <ScrollViewer VerticalScrollBarVisibility="Auto">
+        <StackPanel Padding="40,30" Spacing="24" MaxWidth="700">
+
+            <!-- Header -->
+            <StackPanel Spacing="4">
+                <TextBlock Text="Settings" FontSize="28" FontWeight="Bold"/>
+                <TextBlock x:Name="FirstRunBanner"
+                           Text="👋 First run — please configure your library path and WSL distro."
+                           Foreground="{ThemeResource AccentTextFillColorPrimaryBrush}"
+                           FontSize="13" Visibility="Collapsed"/>
+            </StackPanel>
+
+            <!-- WSL -->
+            <StackPanel Spacing="8">
+                <TextBlock Text="WSL Configuration" FontSize="16" FontWeight="SemiBold"/>
+                <TextBlock Text="WSL Distro name" FontSize="12" Opacity="0.7"/>
+                <TextBox x:Name="WslDistroBox" PlaceholderText="Ubuntu"/>
+                <TextBlock Text="lgogdownloader binary name" FontSize="12" Opacity="0.7"/>
+                <TextBox x:Name="LgogBinaryBox" PlaceholderText="lgogdownloader"/>
+            </StackPanel>
+
+            <!-- Paths -->
+            <StackPanel Spacing="8">
+                <TextBlock Text="Library Paths" FontSize="16" FontWeight="SemiBold"/>
+
+                <TextBlock Text="Windows download directory" FontSize="12" Opacity="0.7"/>
+                <Grid ColumnSpacing="8">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="Auto"/>
+                    </Grid.ColumnDefinitions>
+                    <TextBox x:Name="LibraryDirWindowsBox" Grid.Column="0" PlaceholderText="D:\GOGInstall"/>
+                    <Button Grid.Column="1" Content="Browse" x:Name="BrowseButton" Click="BrowseButton_Click"/>
+                </Grid>
+
+                <TextBlock Text="WSL path (auto-detected)" FontSize="12" Opacity="0.7"/>
+                <TextBox x:Name="LibraryDirWslBox" PlaceholderText="/mnt/d/GOGInstall"/>
+
+                <TextBlock Text="Metadata cache directory" FontSize="12" Opacity="0.7"/>
+                <TextBox x:Name="MetadataCacheDirBox" PlaceholderText="D:\GOGG\cache\games"/>
+
+                <TextBlock Text="XML cache directory" FontSize="12" Opacity="0.7"/>
+                <TextBox x:Name="XmlCacheDirBox" PlaceholderText="D:\GOGG\xml\games"/>
+            </StackPanel>
+
+            <!-- Download options -->
+            <StackPanel Spacing="8">
+                <TextBlock Text="Download Options" FontSize="16" FontWeight="SemiBold"/>
+                <ToggleSwitch x:Name="ExtrasToggle" Header="Download extras by default"
+                              OffContent="No" OnContent="Yes"/>
+                <ToggleSwitch x:Name="AutoRefreshToggle" Header="Auto-refresh library on start"
+                              OffContent="No" OnContent="Yes"/>
+            </StackPanel>
+
+            <!-- Login -->
+            <StackPanel Spacing="8">
+                <TextBlock Text="GOG Account" FontSize="16" FontWeight="SemiBold"/>
+                <StackPanel Orientation="Horizontal" Spacing="12" VerticalAlignment="Center">
+                    <Button x:Name="CheckLoginButton" Content="Check login status"
+                            Click="CheckLoginButton_Click"/>
+                    <Button x:Name="LoginButton" Content="Login via browser"
+                            Click="LoginButton_Click"/>
+                    <ProgressRing x:Name="LoginProgress" IsActive="False" Width="20" Height="20"/>
+                </StackPanel>
+                <TextBlock x:Name="LoginStatusLabel" Text="Not checked" FontSize="13"/>
+            </StackPanel>
+
+            <!-- Save -->
+            <StackPanel Spacing="8">
+                <Button x:Name="SaveButton" Content="Save Settings"
+                        Style="{ThemeResource AccentButtonStyle}"
+                        HorizontalAlignment="Left"
+                        Click="SaveButton_Click"/>
+                <TextBlock x:Name="StatusLabel" Text="" FontSize="13"
+                           Foreground="{ThemeResource AccentTextFillColorPrimaryBrush}"/>
+            </StackPanel>
+
+        </StackPanel>
+    </ScrollViewer>
+</Page>
