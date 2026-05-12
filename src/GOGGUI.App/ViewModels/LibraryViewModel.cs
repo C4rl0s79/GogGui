@@ -51,19 +51,12 @@ public partial class LibraryViewModel : ObservableObject
     [RelayCommand]
     private async Task SyncCacheAsync()
     {
-        if (Games.Count == 0)
-        {
-            Status = "Scan library first";
-            return;
-        }
+        if (Games.Count == 0) { Status = "Scan library first"; return; }
         IsLoading = true;
         Status = "Syncing metadata cache...";
         var progress = new Progress<string>(msg => Status = msg);
         var result = await _cacheSyncService.SyncAsync(Games, progress);
         Status = $"Cache sync: {result.Synced} updated, {result.Skipped} unchanged, {result.Errors} errors";
-        if (result.Errors > 0)
-            Status += $" | First error: {result.ErrorMessages.FirstOrDefault()}";
-        // Refresh HasMetadata/HasXml badges
         await ScanLibraryAsync();
     }
 
@@ -89,7 +82,7 @@ public partial class LibraryViewModel : ObservableObject
         var result = await _lgogService.UpdateCacheAsync(_settings);
         if (result.ExitCode == 0)
         {
-            Status = "Metadata updated from GOG, syncing to library...";
+            Status = "Metadata updated, syncing to library...";
             await SyncCacheAsync();
         }
         else

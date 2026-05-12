@@ -9,7 +9,6 @@ public partial class SettingsViewModel : ObservableObject
 {
     private readonly AppSettingsService _settingsService;
     private readonly LgogService _lgogService;
-    private readonly WslProcessService _wslService;
 
     [ObservableProperty] private string _wslDistro = "Ubuntu";
     [ObservableProperty] private string _libraryDirWindows = @"D:\GOGInstall";
@@ -25,11 +24,10 @@ public partial class SettingsViewModel : ObservableObject
     [ObservableProperty] private bool _isSaving = false;
     [ObservableProperty] private bool _isFirstRun = false;
 
-    public SettingsViewModel(AppSettingsService settingsService, LgogService lgogService, WslProcessService wslService)
+    public SettingsViewModel(AppSettingsService settingsService, LgogService lgogService)
     {
         _settingsService = settingsService;
         _lgogService = lgogService;
-        _wslService = wslService;
         IsFirstRun = settingsService.IsFirstRun;
         LoadFromSettings(settingsService.Current);
     }
@@ -56,8 +54,7 @@ public partial class SettingsViewModel : ObservableObject
     {
         IsLoginChecking = true;
         LoginStatus = "Checking...";
-        var settings = BuildSettings();
-        var result = await _lgogService.CheckLoginStatusAsync(settings);
+        var result = await _lgogService.CheckLoginStatusAsync(BuildSettings());
         LoginStatus = result.ExitCode == 0 ? "✅ Logged in" : "❌ Not logged in";
         IsLoginChecking = false;
     }
@@ -67,8 +64,7 @@ public partial class SettingsViewModel : ObservableObject
     {
         IsLoginChecking = true;
         LoginStatus = "Opening login window...";
-        var settings = BuildSettings();
-        var result = await _lgogService.GuiLoginAsync(settings);
+        var result = await _lgogService.GuiLoginAsync(BuildSettings());
         LoginStatus = result.ExitCode == 0 ? "✅ Logged in" : "❌ Login failed";
         IsLoginChecking = false;
     }
@@ -82,12 +78,6 @@ public partial class SettingsViewModel : ObservableObject
         StatusMessage = "✅ Settings saved!";
         IsFirstRun = false;
         IsSaving = false;
-    }
-
-    [RelayCommand]
-    private void DetectWslPath()
-    {
-        LibraryDirWsl = AppSettingsService.WindowsToWslPath(LibraryDirWindows);
     }
 
     private AppSettings BuildSettings() => new()

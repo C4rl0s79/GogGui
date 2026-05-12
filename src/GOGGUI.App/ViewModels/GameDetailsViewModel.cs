@@ -52,10 +52,7 @@ public partial class GameDetailsViewModel : ObservableObject
         Game.Status = GameStatus.Downloading;
         var result = await _lgogService.DownloadGameAsync(_settings, Game.Slug, DownloadExtras);
         Game.Status = result.ExitCode == 0 ? GameStatus.Complete : GameStatus.Error;
-        Status = result.ExitCode == 0
-            ? $"✅ Download complete"
-            : $"❌ Failed: {result.StdErr}";
-        // Refresh local files list
+        Status = result.ExitCode == 0 ? "✅ Download complete" : $"❌ Failed: {result.StdErr}";
         LocalFiles = _metadataService.GetLocalInstallerFiles(Game);
         IsLoading = false;
     }
@@ -65,7 +62,7 @@ public partial class GameDetailsViewModel : ObservableObject
     {
         IsLoading = true;
         Status = $"Downloading extras for {Game.Title}...";
-        var result = await _lgogService.DownloadGameAsync(_settings, Game.Slug, extrasOnly: true);
+        var result = await _lgogService.DownloadGameAsync(_settings, Game.Slug, extras: true, extrasOnly: true);
         Status = result.ExitCode == 0 ? "✅ Extras downloaded" : $"❌ Failed: {result.StdErr}";
         LocalFiles = _metadataService.GetLocalInstallerFiles(Game);
         IsLoading = false;
