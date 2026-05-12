@@ -17,7 +17,8 @@ public sealed partial class LibraryView : Page
         var settingsService = new AppSettingsService();
         _ = settingsService.LoadAsync();
         var scanService = new LibraryScanService(settingsService);
-        _vm = new LibraryViewModel(lgogService, scanService, settingsService);
+        var cacheSyncService = new CacheSyncService(settingsService);
+        _vm = new LibraryViewModel(lgogService, scanService, cacheSyncService, settingsService);
 
         LibraryDirLabel.Text = _vm.LibraryDir;
 
@@ -29,6 +30,16 @@ public sealed partial class LibraryView : Page
     {
         LoadingRing.IsActive = true;
         await _vm.ScanLibraryCommand.ExecuteAsync(null);
+        GamesRepeater.ItemsSource = _vm.Games;
+        StatusLabel.Text = _vm.Status;
+        GameCountLabel.Text = _vm.GameCount > 0 ? $"{_vm.GameCount} games" : "";
+        LoadingRing.IsActive = false;
+    }
+
+    private async void SyncCacheButton_Click(object sender, Microsoft.UI.Xaml.RoutedEventArgs e)
+    {
+        LoadingRing.IsActive = true;
+        await _vm.SyncCacheCommand.ExecuteAsync(null);
         GamesRepeater.ItemsSource = _vm.Games;
         StatusLabel.Text = _vm.Status;
         GameCountLabel.Text = _vm.GameCount > 0 ? $"{_vm.GameCount} games" : "";

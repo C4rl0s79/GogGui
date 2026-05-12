@@ -14,8 +14,9 @@
         <!-- Toolbar -->
         <StackPanel Grid.Row="0" Orientation="Horizontal" Spacing="10" Margin="0,0,0,12">
             <Button x:Name="ScanButton" Content="🔍 Scan Library" Click="ScanButton_Click"/>
-            <Button x:Name="RefreshButton" Content="↻ Refresh (lgog)" Click="RefreshButton_Click"/>
+            <Button x:Name="SyncCacheButton" Content="📂 Sync Cache" Click="SyncCacheButton_Click"/>
             <Button x:Name="UpdateMetadataButton" Content="☁️ Update Metadata" Click="UpdateMetadataButton_Click"/>
+            <Button x:Name="RefreshButton" Content="↻ Refresh" Click="RefreshButton_Click"/>
             <ProgressRing x:Name="LoadingRing" IsActive="False" Width="24" Height="24"/>
         </StackPanel>
 
@@ -42,7 +43,6 @@
                                 <TextBlock Text="{x:Bind Title}" FontSize="14" FontWeight="SemiBold"
                                            TextWrapping="Wrap" MaxLines="2"/>
                                 <TextBlock Text="{x:Bind Slug}" FontSize="11" Opacity="0.5"/>
-                                <!-- Badges -->
                                 <StackPanel Orientation="Horizontal" Spacing="4" Margin="0,4,0,0">
                                     <Border Background="#1a7f37" CornerRadius="4" Padding="4,1"
                                             Visibility="{x:Bind HasInstallers}">
@@ -55,6 +55,10 @@
                                     <Border Background="#bf8700" CornerRadius="4" Padding="4,1"
                                             Visibility="{x:Bind HasMetadata}">
                                         <TextBlock Text="💾 meta" FontSize="10" Foreground="White"/>
+                                    </Border>
+                                    <Border Background="#0969da" CornerRadius="4" Padding="4,1"
+                                            Visibility="{x:Bind HasXml}">
+                                        <TextBlock Text="📄 xml" FontSize="10" Foreground="White"/>
                                     </Border>
                                 </StackPanel>
                                 <TextBlock Text="{x:Bind Status}" FontSize="11"
