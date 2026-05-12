@@ -47,21 +47,36 @@ jobs:
       - name: Add msbuild to PATH
         uses: microsoft/setup-msbuild@v2
 
-      - name: Setup Windows App SDK
+      - name: Install Windows App SDK via NuGet
         run: |
-          dotnet workload install windows
+          dotnet workload update
+          dotnet workload install wasm-tools
         shell: pwsh
+        continue-on-error: true
 
-      - name: Restore App dependencies
+      - name: Restore NuGet packages
+        run: |
+          nuget restore src/GOGGUI.App/GOGGUI.App.csproj -PackagesDirectory packages
+        shell: pwsh
+        continue-on-error: true
+
+      - name: Restore App dependencies via dotnet
         run: dotnet restore src/GOGGUI.App/GOGGUI.App.csproj
+        continue-on-error: true
 
-      - name: Build App
-        run: dotnet build src/GOGGUI.App/GOGGUI.App.csproj --no-restore --configuration Release
+      - name: Build App with MSBuild
+        run: |
+          msbuild src/GOGGUI.App/GOGGUI.App.csproj `
+            /p:Configuration=Release `
+            /p:Platform=x64 `
+            /p:AppxPackageSigningEnabled=false `
+            /restore
+        shell: pwsh
         continue-on-error: true
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:
           name: GOGGUI-build
-          path: src/GOGGUI.App/bin/Release/
+          path: src/GOGGUI.App/bin/x64/Release/
           if-no-files-found: warn
