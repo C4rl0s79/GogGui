@@ -5,11 +5,12 @@ namespace GOGGUI.Core.Services;
 
 public sealed class AppSettingsService
 {
-    private static readonly string SettingsDir =
-        Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "GOGGUI");
-
+    /// <summary>
+    /// settings.json is stored next to the running executable.
+    /// e.g. D:\GIT\GogGui\src\GOGGUI.App\bin\x64\Release\...\settings.json
+    /// </summary>
     private static readonly string SettingsPath =
-        Path.Combine(SettingsDir, "settings.json");
+        Path.Combine(AppContext.BaseDirectory, "settings.json");
 
     private static readonly JsonSerializerOptions _json = new() { WriteIndented = true };
 
@@ -26,7 +27,7 @@ public sealed class AppSettingsService
 
     public async Task SaveAsync()
     {
-        Directory.CreateDirectory(SettingsDir);
+        // No need to create directory - AppContext.BaseDirectory always exists
         await using var stream = File.Create(SettingsPath);
         await JsonSerializer.SerializeAsync(stream, Current, _json);
     }
