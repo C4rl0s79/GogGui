@@ -17,7 +17,7 @@ public sealed partial class SettingsView : Page
         var lgog = new LgogService(wsl);
         var settingsService = new AppSettingsService();
         _ = settingsService.LoadAsync();
-        _vm = new SettingsViewModel(settingsService, lgog, wsl);
+        _vm = new SettingsViewModel(settingsService, lgog);
         BindUi();
     }
 
@@ -74,10 +74,9 @@ public sealed partial class SettingsView : Page
     private async void BrowseButton_Click(object sender, RoutedEventArgs e)
     {
         var picker = new FolderPicker();
-        picker.SuggestedStartLocation = Windows.Storage.Pickers.PickerLocationId.ComputerFolder;
+        picker.SuggestedStartLocation = PickerLocationId.ComputerFolder;
         picker.FileTypeFilter.Add("*");
 
-        // WinUI 3 requires window handle
         var hwnd = WinRT.Interop.WindowNative.GetWindowHandle(App.Current);
         WinRT.Interop.InitializeWithWindow.Initialize(picker, hwnd);
 
