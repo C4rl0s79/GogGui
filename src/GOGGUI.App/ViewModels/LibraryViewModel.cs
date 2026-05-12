@@ -9,6 +9,7 @@ namespace GOGGUI.ViewModels;
 public partial class LibraryViewModel : ObservableObject
 {
     private readonly LgogService _lgogService;
+    private readonly AppSettings _settings;
 
     [ObservableProperty]
     private ObservableCollection<GameState> _games = new();
@@ -16,37 +17,59 @@ public partial class LibraryViewModel : ObservableObject
     [ObservableProperty]
     private string _status = "Ready";
 
+    [ObservableProperty]
+    private string _loginStatus = "Not checked";
+
+    [ObservableProperty]
+    private bool _isLoading = false;
+
     public LibraryViewModel(LgogService lgogService)
     {
         _lgogService = lgogService;
+        _settings = new AppSettings();
     }
 
     [RelayCommand]
     private async Task RefreshLibraryAsync()
     {
-        Status = "Refreshing library...";
-        // Scan local directory and load games
-        await Task.Delay(500); // Placeholder
-        Status = "Library refreshed";
+        IsLoading = true;
+        Status = "Checking login status...";
+        var result = await _lgogService.CheckLoginStatusAsync(_settings);
+        LoginStatus = result.ExitCode == 0 ? "Logged in" : "Not logged in";
+        Status = result.ExitCode == 0 ? "Library ready" : "Please log in first";
+        IsLoading = false;
+    }
+
+    [RelayCommand]
+    private async Task LoginAsync()
+    {
+        IsLoading = true;
+        Status = "Opening login...";
+        var result = await _lgogService.GuiLoginAsync(_settings);
+        LoginStatus = result.ExitCode == 0 ? "Logged in" : "Login failed";
+        Status = LoginStatus;
+        IsLoading = false;
     }
 
     [RelayCommand]
     private async Task UpdateMetadataAsync()
     {
+        IsLoading = true;
         Status = "Updating metadata from GOG...";
-        // Call lgogdownloader --update-cache
-        await Task.Delay(500); // Placeholder
-        Status = "Metadata updated";
+        var result = await _lgogService.UpdateCacheAsync(_settings);
+        Status = result.ExitCode == 0 ? "Metadata updated" : $"Error: {result.StdErr}";
+        IsLoading = false;
     }
 
     [RelayCommand]
     private async Task DownloadGameAsync(GameState game)
     {
         Status = $"Downloading {game.Title}...";
-        // Call lgogdownloader --download --game {slug}
         game.Status = GameStatus.Downloading;
-        await Task.Delay(1000); // Placeholder
-        game.Status = GameStatus.Complete;
-        Status = $"{game.Title} downloaded";
+        var result = await _lgogService.DownloadGameAsync(_settings, game.Slug, false);
+        game.Status = result.ExitCode == 0 ? GameStatus.Complete : GameStatus.Error;
+        Status = result.ExitCode == 0
+            ? $"{game.Title} downloaded successfully"
+            : $"Download failed: {result.StdErr}";
     }
 }

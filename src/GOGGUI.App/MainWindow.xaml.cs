@@ -9,8 +9,6 @@ public sealed partial class MainWindow : Window
     public MainWindow()
     {
         this.InitializeComponent();
-
-        // Navigate to Library page on startup
         ContentFrame.Navigate(typeof(LibraryView));
     }
 

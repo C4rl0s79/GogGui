@@ -12,16 +12,16 @@
         </Grid.RowDefinitions>
 
         <!-- Header -->
-        <StackPanel Grid.Row="0" Padding="20,15">
+        <StackPanel Grid.Row="0" Padding="20,15" Background="{ThemeResource LayerFillColorDefaultBrush}">
             <TextBlock Text="GOGGUI" FontSize="32" FontWeight="Bold"/>
-            <TextBlock Text="Library Manager for lgogdownloader" FontSize="14" Opacity="0.7" Margin="0,5,0,0"/>
+            <TextBlock Text="Library Manager for lgogdownloader" FontSize="14" Opacity="0.7" Margin="0,4,0,0"/>
         </StackPanel>
 
         <!-- Main Content -->
         <Frame Grid.Row="1" x:Name="ContentFrame" NavigationFailed="ContentFrame_NavigationFailed"/>
 
         <!-- Status Bar -->
-        <StackPanel Grid.Row="2" Padding="20,10" Background="Multiply">
+        <StackPanel Grid.Row="2" Padding="20,8" Background="{ThemeResource LayerFillColorDefaultBrush}">
             <StackPanel Orientation="Horizontal" Spacing="15">
                 <TextBlock x:Name="StatusLabel" Text="Ready"/>
                 <TextBlock x:Name="LoginStatusLabel" Text="Login: Not checked" Foreground="Orange"/>
