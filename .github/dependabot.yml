@@ -1,0 +1,22 @@
+version: 2
+updates:
+  - package-ecosystem: nuget
+    directory: "/src/GOGGUI.Core"
+    schedule:
+      interval: weekly
+    labels:
+      - dependencies
+
+  - package-ecosystem: nuget
+    directory: "/src/GOGGUI.App"
+    schedule:
+      interval: weekly
+    labels:
+      - dependencies
+
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+    labels:
+      - dependencies

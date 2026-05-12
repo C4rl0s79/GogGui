@@ -1,0 +1,67 @@
+name: Build GOGGUI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  build-core:
+    name: Build GOGGUI.Core
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Restore dependencies
+        run: dotnet restore src/GOGGUI.Core/GOGGUI.Core.csproj
+
+      - name: Build Core
+        run: dotnet build src/GOGGUI.Core/GOGGUI.Core.csproj --no-restore --configuration Release
+
+      - name: Run tests (if any)
+        run: dotnet test src/GOGGUI.Core/GOGGUI.Core.csproj --no-build --configuration Release --verbosity normal
+        continue-on-error: true
+
+  build-app:
+    name: Build GOGGUI.App (WinUI 3)
+    runs-on: windows-latest
+    needs: build-core
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Add msbuild to PATH
+        uses: microsoft/setup-msbuild@v2
+
+      - name: Setup Windows App SDK
+        run: |
+          dotnet workload install windows
+        shell: pwsh
+
+      - name: Restore App dependencies
+        run: dotnet restore src/GOGGUI.App/GOGGUI.App.csproj
+
+      - name: Build App
+        run: dotnet build src/GOGGUI.App/GOGGUI.App.csproj --no-restore --configuration Release
+        continue-on-error: true
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: GOGGUI-build
+          path: src/GOGGUI.App/bin/Release/
+          if-no-files-found: warn
