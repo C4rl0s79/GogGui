@@ -7,39 +7,62 @@
     <Grid Padding="20">
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
             <RowDefinition Height="*"/>
         </Grid.RowDefinitions>
 
         <!-- Toolbar -->
-        <StackPanel Grid.Row="0" Orientation="Horizontal" Spacing="10" Margin="0,0,0,20">
-            <Button x:Name="RefreshButton" Content="Refresh Library" Click="RefreshButton_Click"/>
-            <Button x:Name="LoginButton" Content="Login" Click="LoginButton_Click"/>
-            <Button x:Name="UpdateMetadataButton" Content="Update Metadata" Click="UpdateMetadataButton_Click"/>
-            <ToggleSwitch x:Name="ExtrasToggle" Header="Include Extras"
-                          OffContent="No" OnContent="Yes" Margin="20,0,0,0"/>
+        <StackPanel Grid.Row="0" Orientation="Horizontal" Spacing="10" Margin="0,0,0,12">
+            <Button x:Name="ScanButton" Content="🔍 Scan Library" Click="ScanButton_Click"/>
+            <Button x:Name="RefreshButton" Content="↻ Refresh (lgog)" Click="RefreshButton_Click"/>
+            <Button x:Name="UpdateMetadataButton" Content="☁️ Update Metadata" Click="UpdateMetadataButton_Click"/>
+            <ProgressRing x:Name="LoadingRing" IsActive="False" Width="24" Height="24"/>
+        </StackPanel>
+
+        <!-- Status bar -->
+        <StackPanel Grid.Row="1" Orientation="Horizontal" Spacing="20" Margin="0,0,0,16">
+            <TextBlock x:Name="StatusLabel" Text="Ready" FontSize="13"/>
+            <TextBlock x:Name="GameCountLabel" Text="" FontSize="13" Opacity="0.6"/>
+            <TextBlock x:Name="LibraryDirLabel" Text="" FontSize="13" Opacity="0.5"
+                       TextTrimming="CharacterEllipsis" MaxWidth="400"/>
         </StackPanel>
 
         <!-- Games Grid -->
-        <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto">
+        <ScrollViewer Grid.Row="2" VerticalScrollBarVisibility="Auto">
             <ItemsRepeater x:Name="GamesRepeater">
                 <ItemsRepeater.Layout>
-                    <UniformGridLayout MinItemWidth="200" MinItemHeight="260"
+                    <UniformGridLayout MinItemWidth="200" MinItemHeight="200"
                                        ItemsStretch="Fill" MinColumnSpacing="12" MinRowSpacing="12"/>
                 </ItemsRepeater.Layout>
                 <ItemsRepeater.ItemTemplate>
                     <DataTemplate x:DataType="models:GameState">
                         <Border Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
-                                CornerRadius="8" Padding="12">
-                            <StackPanel Spacing="8">
+                                CornerRadius="8" Padding="14">
+                            <StackPanel Spacing="6">
                                 <TextBlock Text="{x:Bind Title}" FontSize="14" FontWeight="SemiBold"
                                            TextWrapping="Wrap" MaxLines="2"/>
-                                <TextBlock Text="{x:Bind Slug}" FontSize="11" Opacity="0.6"/>
-                                <ProgressBar Value="0" Maximum="100" Height="4"
-                                             Foreground="{ThemeResource AccentAAFillColorDefaultBrush}"/>
+                                <TextBlock Text="{x:Bind Slug}" FontSize="11" Opacity="0.5"/>
+                                <!-- Badges -->
+                                <StackPanel Orientation="Horizontal" Spacing="4" Margin="0,4,0,0">
+                                    <Border Background="#1a7f37" CornerRadius="4" Padding="4,1"
+                                            Visibility="{x:Bind HasInstallers}">
+                                        <TextBlock Text="✅ installer" FontSize="10" Foreground="White"/>
+                                    </Border>
+                                    <Border Background="#6e40c9" CornerRadius="4" Padding="4,1"
+                                            Visibility="{x:Bind HasExtras}">
+                                        <TextBlock Text="🎨 extras" FontSize="10" Foreground="White"/>
+                                    </Border>
+                                    <Border Background="#bf8700" CornerRadius="4" Padding="4,1"
+                                            Visibility="{x:Bind HasMetadata}">
+                                        <TextBlock Text="💾 meta" FontSize="10" Foreground="White"/>
+                                    </Border>
+                                </StackPanel>
                                 <TextBlock Text="{x:Bind Status}" FontSize="11"
-                                           Foreground="{ThemeResource AccentTextFillColorPrimaryBrush}"/>
+                                           Foreground="{ThemeResource AccentTextFillColorPrimaryBrush}"
+                                           Margin="0,4,0,0"/>
                                 <Button Content="Download" HorizontalAlignment="Stretch"
-                                        Tag="{x:Bind Slug}" Click="DownloadButton_Click"/>
+                                        Tag="{x:Bind Slug}" Click="DownloadButton_Click"
+                                        Margin="0,6,0,0"/>
                             </StackPanel>
                         </Border>
                     </DataTemplate>

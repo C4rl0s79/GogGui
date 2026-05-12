@@ -7,37 +7,60 @@ namespace GOGGUI.Views;
 
 public sealed partial class LibraryView : Page
 {
-    private readonly LibraryViewModel _viewModel;
+    private readonly LibraryViewModel _vm;
 
     public LibraryView()
     {
         this.InitializeComponent();
         var wslService = new WslProcessService();
         var lgogService = new LgogService(wslService);
-        _viewModel = new LibraryViewModel(lgogService);
+        var settingsService = new AppSettingsService();
+        _ = settingsService.LoadAsync();
+        var scanService = new LibraryScanService(settingsService);
+        _vm = new LibraryViewModel(lgogService, scanService, settingsService);
+
+        LibraryDirLabel.Text = _vm.LibraryDir;
+
+        if (settingsService.Current.AutoRefreshOnStart)
+            _ = _vm.ScanLibraryCommand.ExecuteAsync(null);
+    }
+
+    private async void ScanButton_Click(object sender, Microsoft.UI.Xaml.RoutedEventArgs e)
+    {
+        LoadingRing.IsActive = true;
+        await _vm.ScanLibraryCommand.ExecuteAsync(null);
+        GamesRepeater.ItemsSource = _vm.Games;
+        StatusLabel.Text = _vm.Status;
+        GameCountLabel.Text = _vm.GameCount > 0 ? $"{_vm.GameCount} games" : "";
+        LoadingRing.IsActive = false;
     }
 
     private async void RefreshButton_Click(object sender, Microsoft.UI.Xaml.RoutedEventArgs e)
     {
-        await _viewModel.RefreshLibraryCommand.ExecuteAsync(null);
-    }
-
-    private async void LoginButton_Click(object sender, Microsoft.UI.Xaml.RoutedEventArgs e)
-    {
-        await _viewModel.LoginCommand.ExecuteAsync(null);
+        LoadingRing.IsActive = true;
+        await _vm.RefreshLibraryCommand.ExecuteAsync(null);
+        GamesRepeater.ItemsSource = _vm.Games;
+        StatusLabel.Text = _vm.Status;
+        GameCountLabel.Text = _vm.GameCount > 0 ? $"{_vm.GameCount} games" : "";
+        LoadingRing.IsActive = false;
     }
 
     private async void UpdateMetadataButton_Click(object sender, Microsoft.UI.Xaml.RoutedEventArgs e)
     {
-        await _viewModel.UpdateMetadataCommand.ExecuteAsync(null);
+        LoadingRing.IsActive = true;
+        await _vm.UpdateMetadataCommand.ExecuteAsync(null);
+        StatusLabel.Text = _vm.Status;
+        LoadingRing.IsActive = false;
     }
 
     private async void DownloadButton_Click(object sender, Microsoft.UI.Xaml.RoutedEventArgs e)
     {
         if (sender is Button btn && btn.Tag is string slug)
         {
-            var game = new GameState { Slug = slug, Title = slug };
-            await _viewModel.DownloadGameCommand.ExecuteAsync(game);
+            var game = _vm.Games.FirstOrDefault(g => g.Slug == slug)
+                       ?? new GameState { Slug = slug, Title = slug };
+            await _vm.DownloadGameCommand.ExecuteAsync(game);
+            StatusLabel.Text = _vm.Status;
         }
     }
 }

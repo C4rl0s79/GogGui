@@ -2,11 +2,10 @@ namespace GOGGUI.Core.Models;
 
 public enum GameStatus
 {
-    MetadataOnly,
-    Missing,
-    Partial,
-    Complete,
+    Unknown,
+    NotDownloaded,
     Downloading,
-    Queued,
-    Error
+    Complete,
+    Error,
+    UpdateAvailable,
 }

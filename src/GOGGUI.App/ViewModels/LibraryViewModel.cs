@@ -9,6 +9,7 @@ namespace GOGGUI.ViewModels;
 public partial class LibraryViewModel : ObservableObject
 {
     private readonly LgogService _lgogService;
+    private readonly LibraryScanService _scanService;
     private readonly AppSettings _settings;
 
     [ObservableProperty]
@@ -23,10 +24,34 @@ public partial class LibraryViewModel : ObservableObject
     [ObservableProperty]
     private bool _isLoading = false;
 
-    public LibraryViewModel(LgogService lgogService)
+    [ObservableProperty]
+    private int _gameCount = 0;
+
+    [ObservableProperty]
+    private string _libraryDir = string.Empty;
+
+    public LibraryViewModel(LgogService lgogService, LibraryScanService scanService, AppSettingsService settingsService)
     {
         _lgogService = lgogService;
-        _settings = new AppSettings();
+        _scanService = scanService;
+        _settings = settingsService.Current;
+        LibraryDir = _settings.LibraryDirWindows;
+    }
+
+    [RelayCommand]
+    private async Task ScanLibraryAsync()
+    {
+        IsLoading = true;
+        Status = $"Scanning {LibraryDir}...";
+        var found = await _scanService.ScanAsync();
+        Games.Clear();
+        foreach (var g in found)
+            Games.Add(g);
+        GameCount = Games.Count;
+        Status = GameCount > 0
+            ? $"Found {GameCount} games in library"
+            : $"No games found in {LibraryDir} — check Settings";
+        IsLoading = false;
     }
 
     [RelayCommand]
@@ -36,7 +61,10 @@ public partial class LibraryViewModel : ObservableObject
         Status = "Checking login status...";
         var result = await _lgogService.CheckLoginStatusAsync(_settings);
         LoginStatus = result.ExitCode == 0 ? "Logged in" : "Not logged in";
-        Status = result.ExitCode == 0 ? "Library ready" : "Please log in first";
+        if (result.ExitCode == 0)
+            await ScanLibraryAsync();
+        else
+            Status = "Please log in first (go to Settings)";
         IsLoading = false;
     }
 
@@ -69,7 +97,7 @@ public partial class LibraryViewModel : ObservableObject
         var result = await _lgogService.DownloadGameAsync(_settings, game.Slug, false);
         game.Status = result.ExitCode == 0 ? GameStatus.Complete : GameStatus.Error;
         Status = result.ExitCode == 0
-            ? $"{game.Title} downloaded successfully"
+            ? $"{game.Title} downloaded"
             : $"Download failed: {result.StdErr}";
     }
 }
