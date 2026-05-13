@@ -94,7 +94,8 @@ public sealed partial class LibraryView : Page
 
     private void ViewToggle_Click(object sender, RoutedEventArgs e)
     {
-        bool grid = sender == GridViewToggle;
+        // Use ReferenceEquals to avoid CS0252 ambiguous == on ToggleButton
+        bool grid = ReferenceEquals(sender, GridViewToggle);
         GridViewToggle.IsChecked = grid;
         ListViewToggle.IsChecked = !grid;
         GridScrollViewer.Visibility = grid ? Visibility.Visible : Visibility.Collapsed;

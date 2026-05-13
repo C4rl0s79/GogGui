@@ -17,6 +17,14 @@ public sealed class GameMetadata
     [JsonPropertyName("cdKey")]
     public string CdKey { get; set; } = string.Empty;
 
+    /// <summary>Game version string from JSON (may be null if not present).</summary>
+    [JsonPropertyName("version")]
+    public string? Version { get; set; }
+
+    /// <summary>Release date string from JSON e.g. "2009-03-26".</summary>
+    [JsonPropertyName("releaseDate")]
+    public string? ReleaseDate { get; set; }
+
     [JsonPropertyName("description")]
     public GameDescription? Description { get; set; }
 
