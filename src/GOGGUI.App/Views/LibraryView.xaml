@@ -12,66 +12,186 @@
         </Grid.RowDefinitions>
 
         <!-- Toolbar -->
-        <StackPanel Grid.Row="0" Orientation="Horizontal" Spacing="10" Margin="0,0,0,12">
-            <Button x:Name="ScanButton" Content="🔍 Scan Library" Click="ScanButton_Click"/>
-            <Button x:Name="SyncCacheButton" Content="📂 Sync Cache" Click="SyncCacheButton_Click"/>
-            <Button x:Name="UpdateMetadataButton" Content="☁️ Update Metadata" Click="UpdateMetadataButton_Click"/>
-            <Button x:Name="RefreshButton" Content="↻ Refresh" Click="RefreshButton_Click"/>
-            <ProgressRing x:Name="LoadingRing" IsActive="False" Width="24" Height="24"/>
-        </StackPanel>
+        <Grid Grid.Row="0" Margin="0,0,0,12">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="Auto"/>
+            </Grid.ColumnDefinitions>
+
+            <!-- Left: search + filters -->
+            <StackPanel Grid.Column="0" Orientation="Horizontal" Spacing="10">
+                <TextBox x:Name="SearchBox"
+                         PlaceholderText="🔍 Search games..."
+                         Width="220"
+                         TextChanged="SearchBox_TextChanged"/>
+
+                <ComboBox x:Name="FilterCombo" Header="" Width="160"
+                          SelectionChanged="FilterCombo_SelectionChanged">
+                    <ComboBoxItem Content="All games" Tag="All" IsSelected="True"/>
+                    <ComboBoxItem Content="✅ Complete" Tag="Complete"/>
+                    <ComboBoxItem Content="⬇️ Not downloaded" Tag="NotDownloaded"/>
+                    <ComboBoxItem Content="🔄 Update available" Tag="UpdateAvailable"/>
+                    <ComboBoxItem Content="🎨 Has extras" Tag="HasExtras"/>
+                </ComboBox>
+
+                <ComboBox x:Name="SortCombo" Header="" Width="130"
+                          SelectionChanged="SortCombo_SelectionChanged">
+                    <ComboBoxItem Content="Sort: Title" Tag="Title" IsSelected="True"/>
+                    <ComboBoxItem Content="Sort: Size" Tag="Size"/>
+                    <ComboBoxItem Content="Sort: Status" Tag="Status"/>
+                </ComboBox>
+            </StackPanel>
+
+            <!-- Right: action buttons + view toggle -->
+            <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8">
+                <Button x:Name="ScanButton" Content="🔍 Scan" Click="ScanButton_Click"
+                        ToolTipService.ToolTip="Scan library folder"/>
+                <Button x:Name="CheckUpdatesButton" Content="🔄 Check Updates"
+                        Click="CheckUpdatesButton_Click"/>
+                <Button x:Name="SyncCacheButton" Content="📂 Sync Cache"
+                        Click="SyncCacheButton_Click"/>
+                <Button x:Name="UpdateMetadataButton" Content="☁️ Update Metadata"
+                        Click="UpdateMetadataButton_Click"/>
+                <AppBarSeparator/>
+                <ToggleButton x:Name="GridViewToggle" IsChecked="True"
+                              Click="ViewToggle_Click"
+                              ToolTipService.ToolTip="Grid view">
+                    <FontIcon Glyph="&#xF0E2;"/>
+                </ToggleButton>
+                <ToggleButton x:Name="ListViewToggle" IsChecked="False"
+                              Click="ViewToggle_Click"
+                              ToolTipService.ToolTip="List view">
+                    <FontIcon Glyph="&#xE8FD;"/>
+                </ToggleButton>
+                <ProgressRing x:Name="LoadingRing" IsActive="False" Width="24" Height="24"/>
+            </StackPanel>
+        </Grid>
 
         <!-- Status bar -->
-        <StackPanel Grid.Row="1" Orientation="Horizontal" Spacing="20" Margin="0,0,0,16">
+        <StackPanel Grid.Row="1" Orientation="Horizontal" Spacing="16" Margin="0,0,0,14">
             <TextBlock x:Name="StatusLabel" Text="Ready" FontSize="13"/>
-            <TextBlock x:Name="GameCountLabel" Text="" FontSize="13" Opacity="0.6"/>
-            <TextBlock x:Name="LibraryDirLabel" Text="" FontSize="13" Opacity="0.5"
-                       TextTrimming="CharacterEllipsis" MaxWidth="400"/>
+            <TextBlock x:Name="GameCountLabel" FontSize="13" Opacity="0.6"/>
+            <Border x:Name="UpdatesBadge" Background="#cf222e" CornerRadius="10"
+                    Padding="8,2" Visibility="Collapsed">
+                <TextBlock x:Name="UpdatesBadgeLabel" Foreground="White" FontSize="12"/>
+            </Border>
+            <TextBlock x:Name="LibraryDirLabel" FontSize="12" Opacity="0.45"
+                       TextTrimming="CharacterEllipsis" MaxWidth="350"/>
         </StackPanel>
 
-        <!-- Games Grid -->
-        <ScrollViewer Grid.Row="2" VerticalScrollBarVisibility="Auto">
+        <!-- Games — Grid view -->
+        <ScrollViewer x:Name="GridScrollViewer" Grid.Row="2"
+                      VerticalScrollBarVisibility="Auto">
             <ItemsRepeater x:Name="GamesRepeater">
                 <ItemsRepeater.Layout>
-                    <UniformGridLayout MinItemWidth="200" MinItemHeight="200"
-                                       ItemsStretch="Fill" MinColumnSpacing="12" MinRowSpacing="12"/>
+                    <UniformGridLayout MinItemWidth="210" MinItemHeight="240"
+                                       ItemsStretch="Fill"
+                                       MinColumnSpacing="12" MinRowSpacing="12"/>
                 </ItemsRepeater.Layout>
                 <ItemsRepeater.ItemTemplate>
                     <DataTemplate x:DataType="models:GameState">
                         <Border Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
-                                CornerRadius="8" Padding="14">
-                            <StackPanel Spacing="6">
-                                <TextBlock Text="{x:Bind Title}" FontSize="14" FontWeight="SemiBold"
-                                           TextWrapping="Wrap" MaxLines="2"/>
-                                <TextBlock Text="{x:Bind Slug}" FontSize="11" Opacity="0.5"/>
-                                <StackPanel Orientation="Horizontal" Spacing="4" Margin="0,4,0,0">
-                                    <Border Background="#1a7f37" CornerRadius="4" Padding="4,1"
-                                            Visibility="{x:Bind HasInstallers}">
-                                        <TextBlock Text="✅ installer" FontSize="10" Foreground="White"/>
+                                CornerRadius="8" Padding="0"
+                                Tapped="GameCard_Tapped"
+                                DataContext="{x:Bind}">
+                            <Grid>
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="110"/>
+                                    <RowDefinition Height="*"/>
+                                </Grid.RowDefinitions>
+
+                                <!-- Cover image with fallback -->
+                                <Grid Grid.Row="0" Background="#1e1e2e" CornerRadius="8,8,0,0">
+                                    <Image x:Name="CoverImage"
+                                           Source="{x:Bind CoverPath}"
+                                           Stretch="UniformToFill"
+                                           CornerRadius="8,8,0,0"/>
+                                    <!-- Fallback initials -->
+                                    <Border x:Name="CoverFallback"
+                                            Background="#2d2d3f" CornerRadius="8,8,0,0"
+                                            Visibility="{x:Bind NoCover}">
+                                        <TextBlock Text="{x:Bind TitleInitials}"
+                                                   FontSize="32" FontWeight="Bold"
+                                                   Opacity="0.4"
+                                                   HorizontalAlignment="Center"
+                                                   VerticalAlignment="Center"/>
                                     </Border>
-                                    <Border Background="#6e40c9" CornerRadius="4" Padding="4,1"
-                                            Visibility="{x:Bind HasExtras}">
-                                        <TextBlock Text="🎨 extras" FontSize="10" Foreground="White"/>
-                                    </Border>
-                                    <Border Background="#bf8700" CornerRadius="4" Padding="4,1"
-                                            Visibility="{x:Bind HasMetadata}">
-                                        <TextBlock Text="💾 meta" FontSize="10" Foreground="White"/>
-                                    </Border>
-                                    <Border Background="#0969da" CornerRadius="4" Padding="4,1"
-                                            Visibility="{x:Bind HasXml}">
-                                        <TextBlock Text="📄 xml" FontSize="10" Foreground="White"/>
-                                    </Border>
+                                </Grid>
+
+                                <!-- Info -->
+                                <StackPanel Grid.Row="1" Padding="12,10" Spacing="5">
+                                    <TextBlock Text="{x:Bind Title}" FontSize="13"
+                                               FontWeight="SemiBold" TextWrapping="Wrap"
+                                               MaxLines="2"/>
+                                    <!-- Badges -->
+                                    <StackPanel Orientation="Horizontal" Spacing="4">
+                                        <Border Background="#1a7f37" CornerRadius="4" Padding="4,1"
+                                                Visibility="{x:Bind HasInstallers}">
+                                            <TextBlock Text="✅" FontSize="10"/>
+                                        </Border>
+                                        <Border Background="#6e40c9" CornerRadius="4" Padding="4,1"
+                                                Visibility="{x:Bind HasExtras}">
+                                            <TextBlock Text="🎨" FontSize="10"/>
+                                        </Border>
+                                        <Border Background="#bf8700" CornerRadius="4" Padding="4,1"
+                                                Visibility="{x:Bind HasMetadata}">
+                                            <TextBlock Text="💾" FontSize="10"/>
+                                        </Border>
+                                        <Border Background="#cf222e" CornerRadius="4" Padding="4,1"
+                                                Visibility="{x:Bind IsUpdateAvailable}">
+                                            <TextBlock Text="🔄 Update" FontSize="10" Foreground="White"/>
+                                        </Border>
+                                    </StackPanel>
+                                    <Button Content="⬇️" Tag="{x:Bind Slug}"
+                                            Click="DownloadButton_Click"
+                                            HorizontalAlignment="Right"
+                                            Padding="8,4" FontSize="12"/>
                                 </StackPanel>
-                                <TextBlock Text="{x:Bind Status}" FontSize="11"
-                                           Foreground="{ThemeResource AccentTextFillColorPrimaryBrush}"
-                                           Margin="0,4,0,0"/>
-                                <Button Content="Download" HorizontalAlignment="Stretch"
-                                        Tag="{x:Bind Slug}" Click="DownloadButton_Click"
-                                        Margin="0,6,0,0"/>
-                            </StackPanel>
+                            </Grid>
                         </Border>
                     </DataTemplate>
                 </ItemsRepeater.ItemTemplate>
             </ItemsRepeater>
         </ScrollViewer>
+
+        <!-- Games — List view -->
+        <ListView x:Name="GamesListView" Grid.Row="2"
+                  Visibility="Collapsed"
+                  SelectionMode="Single"
+                  IsItemClickEnabled="True"
+                  ItemClick="GamesListView_ItemClick">
+            <ListView.ItemTemplate>
+                <DataTemplate x:DataType="models:GameState">
+                    <Grid Padding="4,6" ColumnSpacing="12">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="40"/>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="120"/>
+                            <ColumnDefinition Width="80"/>
+                            <ColumnDefinition Width="90"/>
+                        </Grid.ColumnDefinitions>
+                        <!-- Tiny cover / initials -->
+                        <Border Grid.Column="0" Width="36" Height="36"
+                                Background="#2d2d3f" CornerRadius="4">
+                            <TextBlock Text="{x:Bind TitleInitials}" FontSize="13"
+                                       HorizontalAlignment="Center"
+                                       VerticalAlignment="Center" Opacity="0.5"/>
+                        </Border>
+                        <TextBlock Grid.Column="1" Text="{x:Bind Title}" FontSize="13"
+                                   VerticalAlignment="Center" TextWrapping="NoWrap"
+                                   TextTrimming="CharacterEllipsis"/>
+                        <TextBlock Grid.Column="2" Text="{x:Bind Slug}" FontSize="11"
+                                   Opacity="0.5" VerticalAlignment="Center"
+                                   TextTrimming="CharacterEllipsis"/>
+                        <TextBlock Grid.Column="3" Text="{x:Bind InstallersSize}"
+                                   FontSize="12" Opacity="0.7" VerticalAlignment="Center"
+                                   HorizontalAlignment="Right"/>
+                        <TextBlock Grid.Column="4" Text="{x:Bind Status}" FontSize="12"
+                                   Foreground="{ThemeResource AccentTextFillColorPrimaryBrush}"
+                                   VerticalAlignment="Center" HorizontalAlignment="Center"/>
+                    </Grid>
+                </DataTemplate>
+            </ListView.ItemTemplate>
+        </ListView>
     </Grid>
 </Page>
