@@ -101,22 +101,24 @@
                                 </Grid.RowDefinitions>
 
                                 <!-- Cover image with fallback -->
-                                <Grid Grid.Row="0" Background="#1e1e2e" CornerRadius="8,8,0,0">
-                                    <Image x:Name="CoverImage"
-                                           Source="{x:Bind CoverPath}"
-                                           Stretch="UniformToFill"
-                                           CornerRadius="8,8,0,0"/>
-                                    <!-- Fallback initials -->
-                                    <Border x:Name="CoverFallback"
-                                            Background="#2d2d3f" CornerRadius="8,8,0,0"
-                                            Visibility="{x:Bind NoCover}">
-                                        <TextBlock Text="{x:Bind TitleInitials}"
-                                                   FontSize="32" FontWeight="Bold"
-                                                   Opacity="0.4"
-                                                   HorizontalAlignment="Center"
-                                                   VerticalAlignment="Center"/>
-                                    </Border>
-                                </Grid>
+                                <!-- Border clips the Image to rounded corners (Image.CornerRadius not supported in WinUI) -->
+                                <Border Grid.Row="0" Background="#1e1e2e"
+                                        CornerRadius="8,8,0,0"
+                                        ClipToBounds="True">
+                                    <Grid>
+                                        <Image Source="{x:Bind CoverPath}"
+                                               Stretch="UniformToFill"/>
+                                        <!-- Fallback initials shown when no cover -->
+                                        <Border Background="#2d2d3f"
+                                                Visibility="{x:Bind NoCover}">
+                                            <TextBlock Text="{x:Bind TitleInitials}"
+                                                       FontSize="32" FontWeight="Bold"
+                                                       Opacity="0.4"
+                                                       HorizontalAlignment="Center"
+                                                       VerticalAlignment="Center"/>
+                                        </Border>
+                                    </Grid>
+                                </Border>
 
                                 <!-- Info -->
                                 <StackPanel Grid.Row="1" Padding="12,10" Spacing="5">
