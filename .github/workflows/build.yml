@@ -1,17 +1,18 @@
-name: Build GOGGUI
+name: Build & Publish GogGui
 
 on:
   push:
     branches: [ main ]
   pull_request:
     branches: [ main ]
+  workflow_dispatch:   # allow manual trigger from GitHub Actions tab
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
-  build-core:
-    name: Build GOGGUI.Core
+  build:
+    name: Build GogGui (WinUI 3 / x64)
     runs-on: windows-latest
 
     steps:
@@ -23,41 +24,16 @@ jobs:
         with:
           dotnet-version: '8.0.x'
 
-      - name: Restore dependencies
-        run: dotnet restore src/GOGGUI.Core/GOGGUI.Core.csproj
-
-      - name: Build Core
-        run: dotnet build src/GOGGUI.Core/GOGGUI.Core.csproj --no-restore --configuration Release
-
-      - name: Upload Core artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: GOGGUI-Core
-          path: src/GOGGUI.Core/bin/Release/
-          if-no-files-found: warn
-
-  build-app:
-    name: Build GOGGUI.App (WinUI 3)
-    runs-on: windows-latest
-    needs: build-core
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup .NET 8
-        uses: actions/setup-dotnet@v4
-        with:
-          dotnet-version: '8.0.x'
-
-      - name: Add msbuild to PATH
+      - name: Add MSBuild to PATH
         uses: microsoft/setup-msbuild@v2
 
-      - name: Restore App (pulls WindowsAppSDK from NuGet)
+      # ── Restore ────────────────────────────────────────────────────────────
+      - name: Restore
         run: dotnet restore src/GOGGUI.App/GOGGUI.App.csproj
         shell: pwsh
 
-      - name: Build App with MSBuild
+      # ── Build (smoke-test: catch compile errors fast) ───────────────────────
+      - name: Build
         run: |
           msbuild src/GOGGUI.App/GOGGUI.App.csproj `
             /p:Configuration=Release `
@@ -68,16 +44,41 @@ jobs:
             /nologo
         shell: pwsh
 
-      - name: List build output (debug)
+      # ── Publish self-contained (all DLLs included, no install needed) ──────
+      - name: Publish self-contained
         run: |
-          Write-Host "=== bin folder ==="
-          Get-ChildItem -Recurse src/GOGGUI.App/bin | Select-Object FullName, Length | Format-Table -AutoSize
+          dotnet publish src/GOGGUI.App/GOGGUI.App.csproj `
+            --configuration Release `
+            --runtime win-x64 `
+            --self-contained true `
+            -p:Platform=x64 `
+            -p:AppxPackageSigningEnabled=false `
+            -p:GenerateAppxPackageOnBuild=false `
+            -p:WindowsAppSDKSelfContained=true `
+            --output publish/GogGui
+        shell: pwsh
+
+      # ── List output (debug) ─────────────────────────────────────────────────
+      - name: List publish output
+        run: |
+          Get-ChildItem -Recurse publish/GogGui `
+            | Select-Object FullName, Length `
+            | Format-Table -AutoSize
         shell: pwsh
         continue-on-error: true
 
-      - name: Upload App artifact
+      # ── ZIP ────────────────────────────────────────────────────────────────
+      - name: Zip artifact
+        run: |
+          $sha = "${{ github.sha }}".Substring(0,7)
+          Compress-Archive -Path publish/GogGui/* -DestinationPath "publish/GogGui-x64-$sha.zip"
+        shell: pwsh
+
+      # ── Upload artifact ────────────────────────────────────────────────────
+      - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: GOGGUI-App
-          path: src/GOGGUI.App/bin/**/*.exe
-          if-no-files-found: warn
+          name: GogGui-x64
+          path: publish/GogGui-x64-*.zip
+          if-no-files-found: error
+          retention-days: 30
