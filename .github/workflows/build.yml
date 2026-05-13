@@ -68,7 +68,7 @@ jobs:
         shell: pwsh
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: GogGui-x64
           path: publish/GogGui-x64-*.zip
