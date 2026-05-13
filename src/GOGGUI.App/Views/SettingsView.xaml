@@ -57,6 +57,26 @@
                               OffContent="No" OnContent="Yes"/>
             </StackPanel>
 
+            <!-- Cover art -->
+            <StackPanel Spacing="8">
+                <TextBlock Text="Cover Art" FontSize="16" FontWeight="SemiBold"/>
+                <TextBlock FontSize="12" Opacity="0.7" TextWrapping="Wrap">
+                    <Run Text="SteamGridDB is used as a fallback when lgogdownloader did not download a cover."/>
+                    <Run Text="Portrait covers (600×900) are preferred over landscape."/>
+                    <Run Text="Get a free API key at steamgriddb.com/profile/preferences/api"/>
+                </TextBlock>
+
+                <TextBlock Text="SteamGridDB API Key" FontSize="12" Opacity="0.7"/>
+                <PasswordBox x:Name="SteamGridDbApiKeyBox"
+                             PlaceholderText="Paste your API key here..."
+                             PasswordRevealMode="Peek"/>
+
+                <TextBlock Text="Cover cache directory (optional — defaults to MetadataCache\covers)"
+                           FontSize="12" Opacity="0.7"/>
+                <TextBox x:Name="CoverCacheDirBox"
+                         PlaceholderText="D:\GOGG\cache\games\covers"/>
+            </StackPanel>
+
             <!-- Login -->
             <StackPanel Spacing="8">
                 <TextBlock Text="GOG Account" FontSize="16" FontWeight="SemiBold"/>

@@ -23,6 +23,8 @@ public partial class SettingsViewModel : ObservableObject
     [ObservableProperty] private string _statusMessage = string.Empty;
     [ObservableProperty] private bool _isSaving = false;
     [ObservableProperty] private bool _isFirstRun = false;
+    [ObservableProperty] private string _steamGridDbApiKey = string.Empty;
+    [ObservableProperty] private string _coverCacheDir = string.Empty;
 
     public SettingsViewModel(AppSettingsService settingsService, LgogService lgogService)
     {
@@ -42,6 +44,8 @@ public partial class SettingsViewModel : ObservableObject
         LgogBinary = s.LgogBinary;
         DownloadExtrasByDefault = s.DownloadExtrasByDefault;
         AutoRefreshOnStart = s.AutoRefreshOnStart;
+        SteamGridDbApiKey = s.SteamGridDbApiKey;
+        CoverCacheDir = s.CoverCacheDir;
     }
 
     partial void OnLibraryDirWindowsChanged(string value)
@@ -90,5 +94,7 @@ public partial class SettingsViewModel : ObservableObject
         XmlCacheDir = XmlCacheDir,
         DownloadExtrasByDefault = DownloadExtrasByDefault,
         AutoRefreshOnStart = AutoRefreshOnStart,
+        SteamGridDbApiKey = SteamGridDbApiKey,
+        CoverCacheDir = CoverCacheDir,
     };
 }

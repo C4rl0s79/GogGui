@@ -33,6 +33,8 @@ public sealed partial class SettingsView : Page
         AutoRefreshToggle.IsOn = _vm.AutoRefreshOnStart;
         LoginStatusLabel.Text = _vm.LoginStatus;
         FirstRunBanner.Visibility = _vm.IsFirstRun ? Visibility.Visible : Visibility.Collapsed;
+        SteamGridDbApiKeyBox.Password = _vm.SteamGridDbApiKey;
+        CoverCacheDirBox.Text = _vm.CoverCacheDir;
 
         LibraryDirWindowsBox.TextChanged += (s, e) =>
         {
@@ -67,6 +69,8 @@ public sealed partial class SettingsView : Page
         _vm.XmlCacheDir = XmlCacheDirBox.Text;
         _vm.DownloadExtrasByDefault = ExtrasToggle.IsOn;
         _vm.AutoRefreshOnStart = AutoRefreshToggle.IsOn;
+        _vm.SteamGridDbApiKey = SteamGridDbApiKeyBox.Password;
+        _vm.CoverCacheDir = CoverCacheDirBox.Text;
         await _vm.SaveSettingsCommand.ExecuteAsync(null);
         StatusLabel.Text = _vm.StatusMessage;
     }

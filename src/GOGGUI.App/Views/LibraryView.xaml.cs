@@ -9,29 +9,55 @@ namespace GOGGUI.Views;
 public sealed partial class LibraryView : Page
 {
     private readonly LibraryViewModel _vm;
+    private readonly GameCoverService _coverService;
+    private readonly AppSettingsService _settingsService;
 
     public LibraryView()
     {
         this.InitializeComponent();
         var wsl = new WslProcessService();
         var lgog = new LgogService(wsl);
-        var settingsService = new AppSettingsService();
-        _ = settingsService.LoadAsync();
-        var scan = new LibraryScanService(settingsService);
-        var cache = new CacheSyncService(settingsService);
+        _settingsService = new AppSettingsService();
+        _ = _settingsService.LoadAsync();
+        var scan = new LibraryScanService(_settingsService);
+        var cache = new CacheSyncService(_settingsService);
         var updates = new UpdateCheckerService();
-        _vm = new LibraryViewModel(lgog, scan, cache, updates, settingsService);
+        _coverService = new GameCoverService();
+        _vm = new LibraryViewModel(lgog, scan, cache, updates, _settingsService);
 
         LibraryDirLabel.Text = _vm.LibraryDir;
 
-        if (settingsService.Current.AutoRefreshOnStart)
-            _ = _vm.ScanLibraryCommand.ExecuteAsync(null);
+        if (_settingsService.Current.AutoRefreshOnStart)
+            _ = ScanAndFetchCoversAsync();
+    }
+
+    // --- Scan + cover fetch pipeline ---
+
+    private async Task ScanAndFetchCoversAsync()
+    {
+        await RunAsync(() => _vm.ScanLibraryCommand.ExecuteAsync(null));
+
+        var settings = _settingsService.Current;
+        if (!string.IsNullOrWhiteSpace(settings.SteamGridDbApiKey))
+        {
+            LoadingRing.IsActive = true;
+            StatusLabel.Text = "Fetching missing covers from SteamGridDB...";
+            var progress = new Progress<string>(msg => StatusLabel.Text = msg);
+            var results = await _coverService.FetchMissingCoversAsync(
+                _vm.Games.ToList(), settings, progress);
+            if (results.Count > 0)
+            {
+                StatusLabel.Text = $"🖼️ {results.Count} covers fetched";
+                RefreshGrid();
+            }
+            LoadingRing.IsActive = false;
+        }
     }
 
     // --- Toolbar events ---
 
     private async void ScanButton_Click(object sender, RoutedEventArgs e)
-        => await RunAsync(() => _vm.ScanLibraryCommand.ExecuteAsync(null));
+        => await ScanAndFetchCoversAsync();
 
     private async void CheckUpdatesButton_Click(object sender, RoutedEventArgs e)
         => await RunAsync(() => _vm.CheckUpdatesCommand.ExecuteAsync(null));
