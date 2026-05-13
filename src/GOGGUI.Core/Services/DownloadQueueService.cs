@@ -5,9 +5,9 @@ using System.Text.RegularExpressions;
 namespace GOGGUI.Core.Services;
 
 /// <summary>
-/// Manages a queue of lgogdownloader jobs.
-/// Max 4 concurrent games (SemaphoreSlim) — lgogdownloader handles
-/// its own multi-threaded chunk downloading internally.
+/// Sequential download queue — one lgogdownloader process at a time.
+/// lgogdownloader handles parallel chunk downloading internally,
+/// running multiple instances would cause race conditions on the same game folder.
 ///
 /// Progress parsing:
 ///   lgogdownloader outputs lines like:
@@ -16,12 +16,11 @@ namespace GOGGUI.Core.Services;
 /// </summary>
 public sealed class DownloadQueueService
 {
-    private const int MaxConcurrent = 4;
-    private readonly SemaphoreSlim _sem = new(MaxConcurrent, MaxConcurrent);
+    // One lgogdownloader process at a time — it handles its own parallel chunk downloads
+    private readonly SemaphoreSlim _sem = new(1, 1);
     private readonly WslProcessService _wsl;
     private readonly AppSettingsService _settingsService;
 
-    // Percent pattern: matches " 64%" or "64%"
     private static readonly Regex PercentRx =
         new(@"(\d{1,3})%", RegexOptions.Compiled);
 
@@ -55,7 +54,7 @@ public sealed class DownloadQueueService
             job.Status = DownloadJobStatus.Cancelled;
     }
 
-    /// <summary>Cancel all queued/downloading jobs.</summary>
+    /// <summary>Cancel all queued/active jobs.</summary>
     public void CancelAll()
     {
         foreach (var job in Queue.Where(j =>
@@ -63,7 +62,7 @@ public sealed class DownloadQueueService
             Cancel(job);
     }
 
-    /// <summary>Remove completed/cancelled jobs from the visible queue.</summary>
+    /// <summary>Remove completed/cancelled/failed jobs from the visible queue.</summary>
     public void ClearFinished()
     {
         var finished = Queue.Where(j =>
@@ -124,12 +123,10 @@ public sealed class DownloadQueueService
 
     private static void ParseProgress(DownloadJob job, string line)
     {
-        // Extract last percentage found in the line
         var matches = PercentRx.Matches(line);
         if (matches.Count > 0 && int.TryParse(matches[^1].Groups[1].Value, out var pct))
             job.ProgressPercent = Math.Clamp(pct, 0, 100);
 
-        // Show raw line as progress text (trimmed)
         var text = line.Trim();
         if (!string.IsNullOrEmpty(text))
             job.ProgressText = text.Length > 80 ? text[..80] + "…" : text;
