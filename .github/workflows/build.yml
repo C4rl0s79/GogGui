@@ -5,14 +5,14 @@ on:
     branches: [ main ]
   pull_request:
     branches: [ main ]
-  workflow_dispatch:   # allow manual trigger from GitHub Actions tab
+  workflow_dispatch:
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
   build:
-    name: Build GogGui (WinUI 3 / x64)
+    name: Build GogGui (WinUI 3 unpackaged / x64)
     runs-on: windows-latest
 
     steps:
@@ -27,24 +27,20 @@ jobs:
       - name: Add MSBuild to PATH
         uses: microsoft/setup-msbuild@v2
 
-      # ── Restore ────────────────────────────────────────────────────────────
       - name: Restore
         run: dotnet restore src/GOGGUI.App/GOGGUI.App.csproj
         shell: pwsh
 
-      # ── Build (smoke-test: catch compile errors fast) ───────────────────────
-      - name: Build
+      - name: Build (smoke test)
         run: |
           msbuild src/GOGGUI.App/GOGGUI.App.csproj `
             /p:Configuration=Release `
             /p:Platform=x64 `
-            /p:AppxPackageSigningEnabled=false `
-            /p:GenerateAppxPackageOnBuild=false `
             /p:WindowsAppSDKSelfContained=true `
+            /p:WindowsPackageType=None `
             /nologo
         shell: pwsh
 
-      # ── Publish self-contained (all DLLs included, no install needed) ──────
       - name: Publish self-contained
         run: |
           dotnet publish src/GOGGUI.App/GOGGUI.App.csproj `
@@ -52,29 +48,25 @@ jobs:
             --runtime win-x64 `
             --self-contained true `
             -p:Platform=x64 `
-            -p:AppxPackageSigningEnabled=false `
-            -p:GenerateAppxPackageOnBuild=false `
             -p:WindowsAppSDKSelfContained=true `
+            -p:WindowsPackageType=None `
             --output publish/GogGui
         shell: pwsh
 
-      # ── List output (debug) ─────────────────────────────────────────────────
       - name: List publish output
         run: |
-          Get-ChildItem -Recurse publish/GogGui `
-            | Select-Object FullName, Length `
+          Get-ChildItem publish/GogGui `
+            | Select-Object Name, Length `
             | Format-Table -AutoSize
         shell: pwsh
         continue-on-error: true
 
-      # ── ZIP ────────────────────────────────────────────────────────────────
       - name: Zip artifact
         run: |
           $sha = "${{ github.sha }}".Substring(0,7)
           Compress-Archive -Path publish/GogGui/* -DestinationPath "publish/GogGui-x64-$sha.zip"
         shell: pwsh
 
-      # ── Upload artifact ────────────────────────────────────────────────────
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
