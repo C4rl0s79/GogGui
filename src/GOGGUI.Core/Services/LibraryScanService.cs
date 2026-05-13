@@ -2,27 +2,18 @@ using GOGGUI.Core.Models;
 
 namespace GOGGUI.Core.Services;
 
-/// <summary>
-/// Scans the Windows GOG library directory and returns a list of GameState objects.
-/// Each subfolder in LibraryDirWindows is treated as a game (slug = folder name).
-/// lgogdownloader saves covers as:
-///   logo_&lt;slug&gt;.jpg  — primary (used as card cover)
-///   icon_&lt;slug&gt;.png  — fallback
-/// </summary>
 public sealed class LibraryScanService
 {
+    private static readonly LogService Log = LogService.Instance;
+
     private static readonly HashSet<string> InstallerExts =
         new(StringComparer.OrdinalIgnoreCase) { ".exe", ".bin", ".sh", ".pkg" };
-
     private static readonly HashSet<string> ExtrasExts =
         new(StringComparer.OrdinalIgnoreCase) { ".pdf", ".mp3", ".flac", ".ogg", ".zip", ".cbz", ".cbr" };
 
     private readonly AppSettingsService _settings;
 
-    public LibraryScanService(AppSettingsService settings)
-    {
-        _settings = settings;
-    }
+    public LibraryScanService(AppSettingsService settings) => _settings = settings;
 
     public Task<List<GameState>> ScanAsync(CancellationToken ct = default)
         => Task.Run(() => Scan(ct), ct);
@@ -33,14 +24,25 @@ public sealed class LibraryScanService
         var result = new List<GameState>();
 
         if (string.IsNullOrWhiteSpace(libraryDir) || !Directory.Exists(libraryDir))
+        {
+            Log.Warning("LibraryScan", $"Library dir not found: {libraryDir}");
             return result;
+        }
 
-        foreach (var gameDir in Directory.EnumerateDirectories(libraryDir))
+        var dirs = Directory.EnumerateDirectories(libraryDir).ToList();
+        Log.Info("LibraryScan", $"Scanning {dirs.Count} folders in {libraryDir}");
+
+        foreach (var gameDir in dirs)
         {
             ct.ThrowIfCancellationRequested();
             var slug = Path.GetFileName(gameDir);
-            result.Add(ScanGameFolder(slug, gameDir));
+            var state = ScanGameFolder(slug, gameDir);
+            result.Add(state);
         }
+
+        Log.Info("LibraryScan", $"Scan complete: {result.Count} games, " +
+            $"{result.Count(g => g.HasInstallers)} with installers, " +
+            $"{result.Count(g => !g.NoCover)} with covers");
 
         return result.OrderBy(g => g.Slug).ToList();
     }
@@ -71,6 +73,9 @@ public sealed class LibraryScanService
             catch { return 0L; }
         });
 
+        var cover = ResolveCoverPath(dirPath, slug);
+        Log.Debug("LibraryScan", $"{slug}: installers={installerFiles.Count} cover={(cover ?? "none")}");
+
         return new GameState
         {
             Slug               = slug,
@@ -86,35 +91,24 @@ public sealed class LibraryScanService
             InstallersComplete = installerFiles.Count > 0,
             LastScanUtc        = DateTimeOffset.UtcNow,
             Status             = installerFiles.Count > 0 ? GameStatus.Complete : GameStatus.NotDownloaded,
-            CoverPath          = ResolveCoverPath(dirPath, slug),
+            CoverPath          = cover,
         };
     }
 
-    /// <summary>
-    /// Looks for lgogdownloader cover files in order:
-    /// 1. logo_&lt;slug&gt;.jpg   (product logo, best for card)
-    /// 2. icon_&lt;slug&gt;.png   (icon fallback)
-    /// Returns null if neither found — XAML will show initials instead.
-    /// </summary>
     private static string? ResolveCoverPath(string dirPath, string slug)
     {
         var logo = Path.Combine(dirPath, $"logo_{slug}.jpg");
         if (File.Exists(logo)) return logo;
-
         var icon = Path.Combine(dirPath, $"icon_{slug}.png");
         if (File.Exists(icon)) return icon;
-
         return null;
     }
 
-    /// <summary>Converts "the_witcher_3" → "The Witcher 3"</summary>
     private static string SlugToTitle(string slug)
     {
         if (string.IsNullOrEmpty(slug)) return slug;
         return string.Join(" ",
             slug.Split('_', '-')
-                .Select(w => w.Length > 0
-                    ? char.ToUpperInvariant(w[0]) + w[1..]
-                    : w));
+                .Select(w => w.Length > 0 ? char.ToUpperInvariant(w[0]) + w[1..] : w));
     }
 }

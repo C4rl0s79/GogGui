@@ -4,12 +4,14 @@ namespace GOGGUI.Core.Services;
 
 public sealed class WslProcessService
 {
-    /// <summary>Fire-and-forget run, collects all output at end.</summary>
+    private static readonly LogService Log = LogService.Instance;
+
     public async Task<(int ExitCode, string StdOut, string StdErr)> RunAsync(
         string distro,
         string arguments,
         CancellationToken cancellationToken = default)
     {
+        Log.Debug("WslProcess", $"Run: wsl -d {distro} {arguments}");
         var startInfo = BuildStartInfo(distro, arguments);
         using var process = new Process { StartInfo = startInfo };
         process.Start();
@@ -18,19 +20,22 @@ public sealed class WslProcessService
         var stdErrTask = process.StandardError.ReadToEndAsync(cancellationToken);
         await process.WaitForExitAsync(cancellationToken);
 
-        return (process.ExitCode, await stdOutTask, await stdErrTask);
+        var (stdout, stderr) = (await stdOutTask, await stdErrTask);
+        if (process.ExitCode != 0)
+            Log.Warning("WslProcess", $"ExitCode={process.ExitCode} stderr={stderr.Trim()}");
+        else
+            Log.Debug("WslProcess", $"ExitCode=0");
+
+        return (process.ExitCode, stdout, stderr);
     }
 
-    /// <summary>
-    /// Streaming run — calls <paramref name="onLine"/> for every line of stdout.
-    /// Used by DownloadQueueService to parse lgogdownloader progress in real time.
-    /// </summary>
     public async Task<int> RunStreamingAsync(
         string distro,
         string arguments,
         Action<string> onLine,
         CancellationToken cancellationToken = default)
     {
+        Log.Info("WslProcess", $"Streaming: wsl -d {distro} {arguments}");
         var startInfo = BuildStartInfo(distro, arguments);
         using var process = new Process { StartInfo = startInfo };
 
@@ -42,12 +47,14 @@ public sealed class WslProcessService
 
         process.Start();
         process.BeginOutputReadLine();
-
-        // Drain stderr silently (avoid deadlock)
         var stderrTask = process.StandardError.ReadToEndAsync(cancellationToken);
-
         await process.WaitForExitAsync(cancellationToken);
-        await stderrTask;
+        var stderr = await stderrTask;
+
+        if (process.ExitCode != 0)
+            Log.Warning("WslProcess", $"Streaming ExitCode={process.ExitCode} stderr={stderr.Trim()}");
+        else
+            Log.Info("WslProcess", $"Streaming done ExitCode=0");
 
         return process.ExitCode;
     }
