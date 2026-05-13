@@ -5,14 +5,15 @@ namespace GOGGUI.Core.Services;
 /// <summary>
 /// Scans the Windows GOG library directory and returns a list of GameState objects.
 /// Each subfolder in LibraryDirWindows is treated as a game (slug = folder name).
+/// lgogdownloader saves covers as:
+///   logo_&lt;slug&gt;.jpg  — primary (used as card cover)
+///   icon_&lt;slug&gt;.png  — fallback
 /// </summary>
 public sealed class LibraryScanService
 {
-    // Extensions considered as game installers
     private static readonly HashSet<string> InstallerExts =
         new(StringComparer.OrdinalIgnoreCase) { ".exe", ".bin", ".sh", ".pkg" };
 
-    // Extensions considered as extras (artbooks, soundtracks, etc.)
     private static readonly HashSet<string> ExtrasExts =
         new(StringComparer.OrdinalIgnoreCase) { ".pdf", ".mp3", ".flac", ".ogg", ".zip", ".cbz", ".cbr" };
 
@@ -23,13 +24,8 @@ public sealed class LibraryScanService
         _settings = settings;
     }
 
-    /// <summary>
-    /// Scans LibraryDirWindows and returns one GameState per subfolder.
-    /// </summary>
     public Task<List<GameState>> ScanAsync(CancellationToken ct = default)
-    {
-        return Task.Run(() => Scan(ct), ct);
-    }
+        => Task.Run(() => Scan(ct), ct);
 
     private List<GameState> Scan(CancellationToken ct)
     {
@@ -42,10 +38,8 @@ public sealed class LibraryScanService
         foreach (var gameDir in Directory.EnumerateDirectories(libraryDir))
         {
             ct.ThrowIfCancellationRequested();
-
             var slug = Path.GetFileName(gameDir);
-            var state = ScanGameFolder(slug, gameDir);
-            result.Add(state);
+            result.Add(ScanGameFolder(slug, gameDir));
         }
 
         return result.OrderBy(g => g.Slug).ToList();
@@ -53,19 +47,16 @@ public sealed class LibraryScanService
 
     private GameState ScanGameFolder(string slug, string dirPath)
     {
-        var files = Directory.EnumerateFiles(dirPath, "*", SearchOption.AllDirectories)
-                             .ToList();
+        var files = Directory.EnumerateFiles(dirPath, "*", SearchOption.AllDirectories).ToList();
 
         var installerFiles = files.Where(f => InstallerExts.Contains(Path.GetExtension(f))).ToList();
         var extrasFiles    = files.Where(f => ExtrasExts.Contains(Path.GetExtension(f))).ToList();
         var xmlFiles       = files.Where(f => Path.GetExtension(f).Equals(".xml", StringComparison.OrdinalIgnoreCase)).ToList();
 
-        // Check for metadata JSON (lgogdownloader stores e.g. <slug>.json or gameinfo)
         var hasMetadata = files.Any(f =>
             Path.GetExtension(f).Equals(".json", StringComparison.OrdinalIgnoreCase) ||
             Path.GetFileName(f).Equals("gameinfo", StringComparison.OrdinalIgnoreCase));
 
-        // Check for cover/assets (png, jpg)
         var hasAssets = files.Any(f =>
         {
             var ext = Path.GetExtension(f);
@@ -82,20 +73,38 @@ public sealed class LibraryScanService
 
         return new GameState
         {
-            Slug             = slug,
-            Title            = SlugToTitle(slug),
-            SourceDirWindows = dirPath,
-            SourceDirWsl     = AppSettingsService.WindowsToWslPath(dirPath),
-            HasMetadata      = hasMetadata,
-            HasAssets        = hasAssets,
-            HasXml           = xmlFiles.Count > 0,
-            HasInstallers    = installerFiles.Count > 0,
-            HasExtras        = extrasFiles.Count > 0,
-            InstallersBytes  = installersBytes,
+            Slug               = slug,
+            Title              = SlugToTitle(slug),
+            SourceDirWindows   = dirPath,
+            SourceDirWsl       = AppSettingsService.WindowsToWslPath(dirPath),
+            HasMetadata        = hasMetadata,
+            HasAssets          = hasAssets,
+            HasXml             = xmlFiles.Count > 0,
+            HasInstallers      = installerFiles.Count > 0,
+            HasExtras          = extrasFiles.Count > 0,
+            InstallersBytes    = installersBytes,
             InstallersComplete = installerFiles.Count > 0,
-            LastScanUtc      = DateTimeOffset.UtcNow,
-            Status           = installerFiles.Count > 0 ? GameStatus.Complete : GameStatus.NotDownloaded,
+            LastScanUtc        = DateTimeOffset.UtcNow,
+            Status             = installerFiles.Count > 0 ? GameStatus.Complete : GameStatus.NotDownloaded,
+            CoverPath          = ResolveCoverPath(dirPath, slug),
         };
+    }
+
+    /// <summary>
+    /// Looks for lgogdownloader cover files in order:
+    /// 1. logo_&lt;slug&gt;.jpg   (product logo, best for card)
+    /// 2. icon_&lt;slug&gt;.png   (icon fallback)
+    /// Returns null if neither found — XAML will show initials instead.
+    /// </summary>
+    private static string? ResolveCoverPath(string dirPath, string slug)
+    {
+        var logo = Path.Combine(dirPath, $"logo_{slug}.jpg");
+        if (File.Exists(logo)) return logo;
+
+        var icon = Path.Combine(dirPath, $"icon_{slug}.png");
+        if (File.Exists(icon)) return icon;
+
+        return null;
     }
 
     /// <summary>Converts "the_witcher_3" → "The Witcher 3"</summary>
