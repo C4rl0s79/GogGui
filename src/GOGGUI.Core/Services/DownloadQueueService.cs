@@ -75,57 +75,60 @@ public sealed class DownloadQueueService
 
     private async Task RunBatchAsync(List<DownloadJob> jobs, CancellationToken ct)
     {
-        var slugList = string.Join("|", jobs.Select(j => j.Slug));
         var s = _settingsService.Current;
-        var extras = jobs.Any(j => j.IncludeExtras) ? " --extras" : string.Empty;
-        var cmd = $"{s.LgogBinary} --download --game \"{slugList}\"{extras}";
 
-        foreach (var job in jobs) job.Status = DownloadJobStatus.Downloading;
+        // FIX #9: run each job individually so its per-job extras flag is honoured.
+        // Previously all jobs were merged into one slug-list which incorrectly applied
+        // the extras flag from ANY job to ALL jobs.
+        foreach (var job in jobs)
+        {
+            ct.ThrowIfCancellationRequested();
+            await RunSingleJobAsync(job, s, ct);
+        }
 
-        DownloadJob? currentJob = null;
+        Log.Info("DownloadQueue", "Batch finished");
+    }
+
+    private async Task RunSingleJobAsync(DownloadJob job, AppSettings s, CancellationToken ct)
+    {
+        // FIX #5 (also in DownloadQueue): quote slug for shell safety.
+        var quotedSlug = $"'{job.Slug.Replace("'", "'\\''")}'"; // POSIX single-quote escaping
+        var extrasFlag = job.IncludeExtras ? " --extras" : string.Empty;
+        var cmd = $"{s.LgogBinary} --download --game {quotedSlug}{extrasFlag}";
+
+        job.Status = DownloadJobStatus.Downloading;
+        Log.Info("DownloadQueue", $"Starting: {job.Slug}");
 
         try
         {
             var exitCode = await _wsl.RunStreamingAsync(s.WslDistro, cmd, line =>
             {
-                var fileMatch = FileRx.Match(line);
-                if (fileMatch.Success)
-                {
-                    var fn = fileMatch.Groups[1].Value.ToLower();
-                    currentJob = jobs.FirstOrDefault(j =>
-                        fn.Contains(j.Slug.Replace('-', '_'))) ?? currentJob;
-                }
-
                 var pctMatches = PercentRx.Matches(line);
                 if (pctMatches.Count > 0 &&
-                    int.TryParse(pctMatches[^1].Groups[1].Value, out var pct) &&
-                    currentJob is not null)
+                    int.TryParse(pctMatches[^1].Groups[1].Value, out var pct))
                 {
-                    currentJob.ProgressPercent = Math.Clamp(pct, 0, 100);
-                    if (pct == 100) currentJob.Status = DownloadJobStatus.Complete;
+                    job.ProgressPercent = Math.Clamp(pct, 0, 100);
                 }
 
                 var text = line.Trim();
-                if (!string.IsNullOrEmpty(text) && currentJob is not null)
-                    currentJob.ProgressText = text.Length > 80 ? text[..80] + "…" : text;
+                if (!string.IsNullOrEmpty(text))
+                    job.ProgressText = text.Length > 80 ? text[..80] + "…" : text;
             }, ct);
 
-            var finalStatus = exitCode == 0 ? DownloadJobStatus.Complete : DownloadJobStatus.Failed;
-            foreach (var job in jobs.Where(j => j.Status == DownloadJobStatus.Downloading))
-                job.Status = finalStatus;
-
-            Log.Info("DownloadQueue", $"Batch finished exitCode={exitCode}");
+            // FIX #9: map exit-code to status individually per job.
+            job.Status = exitCode == 0 ? DownloadJobStatus.Complete : DownloadJobStatus.Failed;
+            if (exitCode == 100) job.ProgressPercent = 100;
+            Log.Info("DownloadQueue", $"{job.Slug} finished exitCode={exitCode}");
         }
         catch (OperationCanceledException)
         {
-            Log.Info("DownloadQueue", "Batch cancelled");
-            foreach (var job in jobs.Where(j => j.Status == DownloadJobStatus.Downloading))
-                job.Status = DownloadJobStatus.Cancelled;
+            Log.Info("DownloadQueue", $"{job.Slug} cancelled");
+            job.Status = DownloadJobStatus.Cancelled;
         }
         catch (Exception ex)
         {
             Log.Error("DownloadQueue", ex);
-            foreach (var job in jobs) job.Status = DownloadJobStatus.Failed;
+            job.Status = DownloadJobStatus.Failed;
         }
     }
 }
