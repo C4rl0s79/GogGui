@@ -1,24 +1,46 @@
+using CommunityToolkit.Mvvm.ComponentModel;
+
 namespace GOGGUI.Core.Models;
 
-public sealed class GameState
+/// <summary>
+/// FIX #6: Changed from plain class to ObservableObject so that UI bindings
+/// (e.g., game cards in LibraryView) automatically refresh when Status,
+/// CoverPath or other properties change at runtime.
+/// </summary>
+public sealed partial class GameState : ObservableObject
 {
-    public string Slug { get; set; } = string.Empty;
-    public string Title { get; set; } = string.Empty;
-    public string SourceDirWindows { get; set; } = string.Empty;
-    public string SourceDirWsl { get; set; } = string.Empty;
-    public bool HasMetadata { get; set; }
-    public bool HasAssets { get; set; }
-    public bool HasXml { get; set; }
-    public bool HasInstallers { get; set; }
-    public bool HasExtras { get; set; }
-    public bool InstallersComplete { get; set; }
-    public long InstallersBytes { get; set; }
-    public DateTimeOffset LastScanUtc { get; set; }
-    public DateTimeOffset LastMetadataSyncUtc { get; set; }
-    public GameStatus Status { get; set; }
+    [ObservableProperty] private string _slug = string.Empty;
+    [ObservableProperty] private string _title = string.Empty;
+    [ObservableProperty] private string _sourceDirWindows = string.Empty;
+    [ObservableProperty] private string _sourceDirWsl = string.Empty;
+    [ObservableProperty] private bool _hasMetadata;
+    [ObservableProperty] private bool _hasAssets;
+    [ObservableProperty] private bool _hasXml;
+    [ObservableProperty] private bool _hasInstallers;
+    [ObservableProperty] private bool _hasExtras;
+    [ObservableProperty] private bool _installersComplete;
+    [ObservableProperty] private long _installersBytes;
+    [ObservableProperty] private DateTimeOffset _lastScanUtc;
+    [ObservableProperty] private DateTimeOffset _lastMetadataSyncUtc;
+    [ObservableProperty] private GameStatus _status;
 
-    // Cover image path - set by LibraryScanService if found locally
-    public string? CoverPath { get; set; }
+    // FIX #7: CoverPath is now an [ObservableProperty] so the
+    // binding pipeline is notified when it changes, and NoCover
+    // is recomputed lazily rather than calling File.Exists() on
+    // every XAML binding pass.
+    [ObservableProperty] private string? _coverPath;
+
+    // Cache the result of File.Exists so it is not evaluated
+    // on every UI binding tick (hundreds of calls at startup
+    // for large libraries).
+    private bool? _noCoverCached;
+
+    partial void OnCoverPathChanged(string? value)
+    {
+        _noCoverCached = null; // invalidate cache when path changes
+        OnPropertyChanged(nameof(NoCover));
+        OnPropertyChanged(nameof(TitleInitials)); // may depend indirectly on Title
+    }
 
     // --- Computed helpers for XAML bindings ---
 
@@ -34,8 +56,19 @@ public sealed class GameState
         }
     }
 
-    /// <summary>True when no local cover image exists — shows initials fallback.</summary>
-    public bool NoCover => string.IsNullOrEmpty(CoverPath) || !File.Exists(CoverPath);
+    /// <summary>
+    /// True when no local cover image exists — shows initials fallback.
+    /// FIX #7: result is cached per CoverPath value; File.Exists() is called
+    /// at most once per scan, not on every XAML binding evaluation.
+    /// </summary>
+    public bool NoCover
+    {
+        get
+        {
+            _noCoverCached ??= string.IsNullOrEmpty(CoverPath) || !File.Exists(CoverPath);
+            return _noCoverCached.Value;
+        }
+    }
 
     /// <summary>Visibility helper for UpdateAvailable badge.</summary>
     public bool IsUpdateAvailable => Status == GameStatus.UpdateAvailable;
