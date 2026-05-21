@@ -1,45 +1,105 @@
-using CommunityToolkit.Mvvm.ComponentModel;
+using System.ComponentModel;
+using System.Runtime.CompilerServices;
 
 namespace GOGGUI.Core.Models;
 
 /// <summary>
-/// FIX #6: Changed from plain class to ObservableObject so that UI bindings
-/// (e.g., game cards in LibraryView) automatically refresh when Status,
-/// CoverPath or other properties change at runtime.
+/// FIX #6: Implements INotifyPropertyChanged so UI bindings automatically
+/// refresh when Status, CoverPath or other properties change at runtime.
+/// Intentionally avoids CommunityToolkit.Mvvm — GOGGUI.Core is a plain
+/// .NET library and should not depend on a UI-layer NuGet package.
 /// </summary>
-public sealed partial class GameState : ObservableObject
+public sealed class GameState : INotifyPropertyChanged
 {
-    [ObservableProperty] private string _slug = string.Empty;
-    [ObservableProperty] private string _title = string.Empty;
-    [ObservableProperty] private string _sourceDirWindows = string.Empty;
-    [ObservableProperty] private string _sourceDirWsl = string.Empty;
-    [ObservableProperty] private bool _hasMetadata;
-    [ObservableProperty] private bool _hasAssets;
-    [ObservableProperty] private bool _hasXml;
-    [ObservableProperty] private bool _hasInstallers;
-    [ObservableProperty] private bool _hasExtras;
-    [ObservableProperty] private bool _installersComplete;
-    [ObservableProperty] private long _installersBytes;
-    [ObservableProperty] private DateTimeOffset _lastScanUtc;
-    [ObservableProperty] private DateTimeOffset _lastMetadataSyncUtc;
-    [ObservableProperty] private GameStatus _status;
+    public event PropertyChangedEventHandler? PropertyChanged;
 
-    // FIX #7: CoverPath is now an [ObservableProperty] so the
-    // binding pipeline is notified when it changes, and NoCover
-    // is recomputed lazily rather than calling File.Exists() on
-    // every XAML binding pass.
-    [ObservableProperty] private string? _coverPath;
+    private void SetField<T>(ref T field, T value, [CallerMemberName] string? name = null)
+    {
+        if (EqualityComparer<T>.Default.Equals(field, value)) return;
+        field = value;
+        PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));
+    }
 
-    // Cache the result of File.Exists so it is not evaluated
-    // on every UI binding tick (hundreds of calls at startup
-    // for large libraries).
+    private string _slug = string.Empty;
+    public string Slug { get => _slug; set => SetField(ref _slug, value); }
+
+    private string _title = string.Empty;
+    public string Title
+    {
+        get => _title;
+        set
+        {
+            SetField(ref _title, value);
+            // TitleInitials depends on Title
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(TitleInitials)));
+        }
+    }
+
+    private string _sourceDirWindows = string.Empty;
+    public string SourceDirWindows { get => _sourceDirWindows; set => SetField(ref _sourceDirWindows, value); }
+
+    private string _sourceDirWsl = string.Empty;
+    public string SourceDirWsl { get => _sourceDirWsl; set => SetField(ref _sourceDirWsl, value); }
+
+    private bool _hasMetadata;
+    public bool HasMetadata { get => _hasMetadata; set => SetField(ref _hasMetadata, value); }
+
+    private bool _hasAssets;
+    public bool HasAssets { get => _hasAssets; set => SetField(ref _hasAssets, value); }
+
+    private bool _hasXml;
+    public bool HasXml { get => _hasXml; set => SetField(ref _hasXml, value); }
+
+    private bool _hasInstallers;
+    public bool HasInstallers { get => _hasInstallers; set => SetField(ref _hasInstallers, value); }
+
+    private bool _hasExtras;
+    public bool HasExtras { get => _hasExtras; set => SetField(ref _hasExtras, value); }
+
+    private bool _installersComplete;
+    public bool InstallersComplete { get => _installersComplete; set => SetField(ref _installersComplete, value); }
+
+    private long _installersBytes;
+    public long InstallersBytes
+    {
+        get => _installersBytes;
+        set
+        {
+            SetField(ref _installersBytes, value);
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(InstallersSize)));
+        }
+    }
+
+    public DateTimeOffset LastScanUtc { get; set; }
+    public DateTimeOffset LastMetadataSyncUtc { get; set; }
+
+    private GameStatus _status;
+    public GameStatus Status
+    {
+        get => _status;
+        set
+        {
+            SetField(ref _status, value);
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(IsUpdateAvailable)));
+        }
+    }
+
+    // FIX #7: CoverPath notifies NoCover when it changes; File.Exists result
+    // is cached so it is not called on every XAML binding evaluation.
+    private string? _coverPath;
     private bool? _noCoverCached;
 
-    partial void OnCoverPathChanged(string? value)
+    public string? CoverPath
     {
-        _noCoverCached = null; // invalidate cache when path changes
-        OnPropertyChanged(nameof(NoCover));
-        OnPropertyChanged(nameof(TitleInitials)); // may depend indirectly on Title
+        get => _coverPath;
+        set
+        {
+            if (_coverPath == value) return;
+            _coverPath = value;
+            _noCoverCached = null; // invalidate cache
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(CoverPath)));
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(NoCover)));
+        }
     }
 
     // --- Computed helpers for XAML bindings ---
@@ -58,14 +118,13 @@ public sealed partial class GameState : ObservableObject
 
     /// <summary>
     /// True when no local cover image exists — shows initials fallback.
-    /// FIX #7: result is cached per CoverPath value; File.Exists() is called
-    /// at most once per scan, not on every XAML binding evaluation.
+    /// FIX #7: File.Exists is called at most once per CoverPath value.
     /// </summary>
     public bool NoCover
     {
         get
         {
-            _noCoverCached ??= string.IsNullOrEmpty(CoverPath) || !File.Exists(CoverPath);
+            _noCoverCached ??= string.IsNullOrEmpty(_coverPath) || !File.Exists(_coverPath);
             return _noCoverCached.Value;
         }
     }
