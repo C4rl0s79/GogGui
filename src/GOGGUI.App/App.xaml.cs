@@ -6,12 +6,14 @@ namespace GOGGUI;
 
 public partial class App : Application
 {
+    // Exposed for simple DI via App.Current — could be replaced with a full DI container later.
     public static DownloadQueueService DownloadQueue { get; private set; } = null!;
+    public static AppSettingsService   Settings      { get; private set; } = null!;
+
     private static readonly LogService Log = LogService.Instance;
 
     public App()
     {
-        // Bootstrap Windows App SDK runtime for unpackaged apps
         try
         {
             Bootstrap.Initialize(0x00010005);
@@ -25,13 +27,17 @@ public partial class App : Application
         this.InitializeComponent();
     }
 
-    protected override void OnLaunched(LaunchActivatedEventArgs args)
+    protected override async void OnLaunched(LaunchActivatedEventArgs args)
     {
         Log.Info("App", "OnLaunched");
 
-        var wsl = new WslProcessService();
+        var wsl      = new WslProcessService();
         var settings = new AppSettingsService();
-        _ = settings.LoadAsync();
+
+        // FIX #1: properly await settings load before creating the window
+        await settings.LoadAsync();
+
+        Settings      = settings;
         DownloadQueue = new DownloadQueueService(wsl, settings);
 
         Log.Info("App", $"Log: {Log.LogFilePath}");
