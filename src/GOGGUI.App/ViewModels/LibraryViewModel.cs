@@ -12,10 +12,19 @@ public partial class LibraryViewModel : ObservableObject
     private readonly LibraryScanService _scanService;
     private readonly CacheSyncService _cacheSyncService;
     private readonly UpdateCheckerService _updateChecker;
-    private readonly AppSettings _settings;
+
+    // FIX #3: keep reference to the service (not a snapshot) so changes
+    // saved in SettingsView are immediately visible without restarting.
+    private readonly AppSettingsService _settingsService;
+
+    // FIX #4: route single-game downloads through the shared queue.
+    private readonly DownloadQueueService _downloadQueue;
 
     // Full unfiltered list
     private List<GameState> _allGames = new();
+
+    // FIX #10: CancellationTokenSource for the current scan operation.
+    private CancellationTokenSource? _scanCts;
 
     [ObservableProperty] private ObservableCollection<GameState> _games = new();
     [ObservableProperty] private string _status = "Ready";
@@ -24,8 +33,8 @@ public partial class LibraryViewModel : ObservableObject
     [ObservableProperty] private int _totalCount = 0;
     [ObservableProperty] private string _libraryDir = string.Empty;
     [ObservableProperty] private string _searchText = string.Empty;
-    [ObservableProperty] private string _filterStatus = "All";   // All | Complete | NotDownloaded | UpdateAvailable
-    [ObservableProperty] private string _sortBy = "Title";        // Title | Size | Status
+    [ObservableProperty] private string _filterStatus = "All";
+    [ObservableProperty] private string _sortBy = "Title";
     [ObservableProperty] private bool _isGridView = true;
     [ObservableProperty] private int _updatesAvailable = 0;
 
@@ -34,14 +43,18 @@ public partial class LibraryViewModel : ObservableObject
         LibraryScanService scanService,
         CacheSyncService cacheSyncService,
         UpdateCheckerService updateChecker,
-        AppSettingsService settingsService)
+        AppSettingsService settingsService,
+        DownloadQueueService downloadQueue)
     {
-        _lgogService = lgogService;
-        _scanService = scanService;
+        _lgogService     = lgogService;
+        _scanService     = scanService;
         _cacheSyncService = cacheSyncService;
-        _updateChecker = updateChecker;
-        _settings = settingsService.Current;
-        LibraryDir = _settings.LibraryDirWindows;
+        _updateChecker   = updateChecker;
+        _settingsService = settingsService;
+        _downloadQueue   = downloadQueue;
+
+        // Read the current library dir for display; reflects latest saved settings.
+        LibraryDir = _settingsService.Current.LibraryDirWindows;
     }
 
     partial void OnSearchTextChanged(string value) => ApplyFilter();
@@ -51,16 +64,38 @@ public partial class LibraryViewModel : ObservableObject
     [RelayCommand]
     private async Task ScanLibraryAsync()
     {
+        // FIX #10: cancel any ongoing scan before starting a new one.
+        _scanCts?.Cancel();
+        _scanCts?.Dispose();
+        _scanCts = new CancellationTokenSource();
+        var ct = _scanCts.Token;
+
         IsLoading = true;
+        LibraryDir = _settingsService.Current.LibraryDirWindows; // always fresh
         Status = $"Scanning {LibraryDir}...";
-        _allGames = await _scanService.ScanAsync();
+
+        try
+        {
+            _allGames = await _scanService.ScanAsync(ct);
+        }
+        catch (OperationCanceledException)
+        {
+            Status = "Scan cancelled";
+            IsLoading = false;
+            return;
+        }
+
         TotalCount = _allGames.Count;
         ApplyFilter();
         Status = TotalCount > 0
             ? $"Found {TotalCount} games"
-            : $"No games found — check Settings";
+            : "No games found — check Settings";
         IsLoading = false;
     }
+
+    /// <summary>FIX #10: exposes cancellation to the View (e.g., a Cancel button).</summary>
+    [RelayCommand]
+    private void CancelScan() => _scanCts?.Cancel();
 
     [RelayCommand]
     private async Task CheckUpdatesAsync()
@@ -107,7 +142,7 @@ public partial class LibraryViewModel : ObservableObject
     {
         IsLoading = true;
         Status = "Checking login...";
-        var result = await _lgogService.CheckLoginStatusAsync(_settings);
+        var result = await _lgogService.CheckLoginStatusAsync(_settingsService.Current);
         if (result.ExitCode == 0)
             await ScanLibraryAsync();
         else
@@ -122,7 +157,7 @@ public partial class LibraryViewModel : ObservableObject
     {
         IsLoading = true;
         Status = "Updating metadata from GOG...";
-        var result = await _lgogService.UpdateCacheAsync(_settings);
+        var result = await _lgogService.UpdateCacheAsync(_settingsService.Current);
         if (result.ExitCode == 0)
             await SyncCacheAsync();
         else
@@ -132,29 +167,34 @@ public partial class LibraryViewModel : ObservableObject
         }
     }
 
+    /// <summary>
+    /// FIX #4: enqueue the game in DownloadQueueService instead of calling
+    /// LgogService directly — provides real progress reporting and a
+    /// consistent queue UI.
+    /// </summary>
     [RelayCommand]
     private async Task DownloadGameAsync(GameState game)
     {
         Status = $"Queuing {game.Title}...";
         game.Status = GameStatus.Downloading;
         ApplyFilter();
-        var result = await _lgogService.DownloadGameAsync(_settings, game.Slug, false);
-        game.Status = result.ExitCode == 0 ? GameStatus.Complete : GameStatus.Error;
-        Status = result.ExitCode == 0 ? $"{game.Title} downloaded" : $"Error: {result.StdErr}";
-        ApplyFilter();
+
+        _downloadQueue.Enqueue(game.Slug, game.Title, includeExtras: false);
+        await _downloadQueue.StartAsync();
+
+        // After the queue finishes, re-scan so status badges update.
+        await ScanLibraryAsync();
     }
 
     private void ApplyFilter()
     {
         var filtered = _allGames.AsEnumerable();
 
-        // Search
         if (!string.IsNullOrWhiteSpace(SearchText))
             filtered = filtered.Where(g =>
                 g.Title.Contains(SearchText, StringComparison.OrdinalIgnoreCase) ||
                 g.Slug.Contains(SearchText, StringComparison.OrdinalIgnoreCase));
 
-        // Filter
         filtered = FilterStatus switch
         {
             "Complete"        => filtered.Where(g => g.Status == GameStatus.Complete),
@@ -164,7 +204,6 @@ public partial class LibraryViewModel : ObservableObject
             _                 => filtered
         };
 
-        // Sort
         filtered = SortBy switch
         {
             "Size"   => filtered.OrderByDescending(g => g.InstallersBytes),
