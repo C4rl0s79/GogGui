@@ -2,7 +2,10 @@ name: Build & Publish GogGui
 
 on:
   push:
-    branches: [ main ]
+    branches:
+      - main
+      - 'fix/**'
+      - 'feature/**'
   pull_request:
     branches: [ main ]
   workflow_dispatch:
@@ -27,30 +30,35 @@ jobs:
       - name: Add MSBuild to PATH
         uses: microsoft/setup-msbuild@v2
 
-      - name: Restore
+      - name: Restore NuGet packages
         run: dotnet restore src/GOGGUI.App/GOGGUI.App.csproj
         shell: pwsh
 
-      - name: Build (smoke test)
+      - name: Build
         run: |
           msbuild src/GOGGUI.App/GOGGUI.App.csproj `
+            /t:Build `
             /p:Configuration=Release `
             /p:Platform=x64 `
+            /p:RuntimeIdentifier=win-x64 `
+            /p:SelfContained=true `
             /p:WindowsAppSDKSelfContained=true `
             /p:WindowsPackageType=None `
-            /nologo
+            /m /nologo
         shell: pwsh
 
-      - name: Publish self-contained
+      - name: Publish
         run: |
-          dotnet publish src/GOGGUI.App/GOGGUI.App.csproj `
-            --configuration Release `
-            --runtime win-x64 `
-            --self-contained true `
-            -p:Platform=x64 `
-            -p:WindowsAppSDKSelfContained=true `
-            -p:WindowsPackageType=None `
-            --output publish/GogGui
+          msbuild src/GOGGUI.App/GOGGUI.App.csproj `
+            /t:Publish `
+            /p:Configuration=Release `
+            /p:Platform=x64 `
+            /p:RuntimeIdentifier=win-x64 `
+            /p:SelfContained=true `
+            /p:WindowsAppSDKSelfContained=true `
+            /p:WindowsPackageType=None `
+            "/p:PublishDir=${{ github.workspace }}\publish\GogGui\" `
+            /m /nologo
         shell: pwsh
 
       - name: List publish output
@@ -61,16 +69,21 @@ jobs:
         shell: pwsh
         continue-on-error: true
 
-      - name: Zip artifact
+      - name: Prepare artifact name
+        id: artifact
         run: |
-          $sha = "${{ github.sha }}".Substring(0,7)
-          Compress-Archive -Path publish/GogGui/* -DestinationPath "publish/GogGui-x64-$sha.zip"
+          $safe = "${{ github.ref_name }}" -replace '[/\\:*?"<>|\r\n]', '-'
+          $sha  = "${{ github.sha }}".Substring(0, 7)
+          echo "name=GogGui-x64-${safe}" >> $env:GITHUB_OUTPUT
+          Compress-Archive `
+            -Path publish/GogGui/* `
+            -DestinationPath "publish/GogGui-x64-${safe}-${sha}.zip"
         shell: pwsh
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: GogGui-x64
+          name: ${{ steps.artifact.outputs.name }}
           path: publish/GogGui-x64-*.zip
           if-no-files-found: error
           retention-days: 30

@@ -23,6 +23,9 @@ public sealed partial class MainWindow : Window
                 case "library":
                     ContentFrame.Navigate(typeof(LibraryView));
                     break;
+                case "downloads":
+                    ContentFrame.Navigate(typeof(DownloadQueueView));
+                    break;
                 case "settings":
                     ContentFrame.Navigate(typeof(SettingsView));
                     break;

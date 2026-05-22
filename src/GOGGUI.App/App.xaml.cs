@@ -1,42 +1,76 @@
 using Microsoft.UI.Xaml;
-using Microsoft.Windows.ApplicationModel.DynamicDependency;
 using GOGGUI.Core.Services;
+using System.Runtime.InteropServices;
 
 namespace GOGGUI;
 
 public partial class App : Application
 {
     public static DownloadQueueService DownloadQueue { get; private set; } = null!;
+    public static AppSettingsService   Settings      { get; private set; } = null!;
+
     private static readonly LogService Log = LogService.Instance;
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    private static extern int MessageBox(IntPtr hWnd, string text, string caption, uint type);
+
+    private static void Fatal(string context, Exception ex)
+    {
+        var msg = $"{context}\n\n{ex.GetType().Name}: {ex.Message}\n\n{ex.StackTrace}";
+        try { Log.Error(context, ex); } catch { }
+        MessageBox(IntPtr.Zero, msg, $"GogGui — Fatal error in {context}", 0x10);
+        Environment.Exit(1);
+    }
 
     public App()
     {
-        // Bootstrap Windows App SDK runtime for unpackaged apps
+        // Bootstrap.Initialize is intentionally NOT called here.
+        // When built with WindowsAppSDKSelfContained=true + WindowsPackageType=None
+        // all Windows App SDK binaries are copied next to the EXE and are loaded
+        // automatically by the OS loader. Calling Bootstrap.Initialize in that
+        // configuration tries to register a packaged MSIX runtime that is absent
+        // on plain Windows installs, causing a COMException on startup.
+
+        AppDomain.CurrentDomain.UnhandledException += (_, e) =>
+            Fatal("AppDomain.UnhandledException", (Exception)e.ExceptionObject);
+
+        TaskScheduler.UnobservedTaskException += (_, e) =>
+        {
+            e.SetObserved();
+            Fatal("TaskScheduler.UnobservedTaskException", e.Exception);
+        };
+
         try
         {
-            Bootstrap.Initialize(0x00010005);
-            Log.Info("App", "Windows App SDK Bootstrap OK");
+            this.InitializeComponent();
         }
         catch (Exception ex)
         {
-            Log.Error("App", $"Bootstrap failed: {ex.Message}");
+            Fatal("App.InitializeComponent", ex);
         }
-
-        this.InitializeComponent();
     }
 
-    protected override void OnLaunched(LaunchActivatedEventArgs args)
+    protected override async void OnLaunched(LaunchActivatedEventArgs args)
     {
-        Log.Info("App", "OnLaunched");
+        try
+        {
+            Log.Info("App", "OnLaunched");
 
-        var wsl = new WslProcessService();
-        var settings = new AppSettingsService();
-        _ = settings.LoadAsync();
-        DownloadQueue = new DownloadQueueService(wsl, settings);
+            var wsl      = new WslProcessService();
+            var settings = new AppSettingsService();
+            await settings.LoadAsync();
 
-        Log.Info("App", $"Log: {Log.LogFilePath}");
+            Settings      = settings;
+            DownloadQueue = new DownloadQueueService(wsl, settings);
 
-        var window = new MainWindow();
-        window.Activate();
+            Log.Info("App", $"Log file: {Log.LogFilePath}");
+
+            var window = new MainWindow();
+            window.Activate();
+        }
+        catch (Exception ex)
+        {
+            Fatal("OnLaunched", ex);
+        }
     }
 }
