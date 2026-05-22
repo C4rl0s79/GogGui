@@ -22,6 +22,8 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      # Pin to .NET 8 — dotnet SDK 10 ships on windows-latest and breaks
+      # Windows App SDK PRI tasks that rely on VS MSBuild internals.
       - name: Setup .NET 8
         uses: actions/setup-dotnet@v4
         with:
@@ -30,30 +32,43 @@ jobs:
       - name: Add MSBuild to PATH
         uses: microsoft/setup-msbuild@v2
 
+      # Install the UWP / WinAppSDK workload that provides
+      # Microsoft.Build.Packaging.Pri.Tasks.dll required by MrtCore.PriGen.
+      - name: Install Windows App SDK build tools
+        run: |
+          $vsPath = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" `
+            -latest -products * -requires Microsoft.VisualStudio.Component.NuGet `
+            -property installationPath
+          $installer = Join-Path $vsPath 'Common7\IDE\VSIXInstaller.exe'
+          # Install UWP workload via VS installer
+          & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vs_installer.exe" `
+            modify `
+            --installPath $vsPath `
+            --add Microsoft.VisualStudio.Workload.Universal `
+            --quiet --norestart --force 2>&1 | Out-Null
+          Write-Host "VS workload install attempted"
+        shell: pwsh
+        continue-on-error: true
+
       - name: Restore NuGet packages
         run: dotnet restore src/GOGGUI.App/GOGGUI.App.csproj
         shell: pwsh
 
-      - name: Build (smoke test)
+      # Use MSBuild for the full build+publish — avoids dotnet CLI PRI task issue.
+      # /t:Publish creates the self-contained output in the PublishDir below.
+      - name: Build & Publish with MSBuild
         run: |
           msbuild src/GOGGUI.App/GOGGUI.App.csproj `
+            /t:Restore;Build;Publish `
             /p:Configuration=Release `
             /p:Platform=x64 `
+            /p:RuntimeIdentifier=win-x64 `
+            /p:SelfContained=true `
             /p:WindowsAppSDKSelfContained=true `
             /p:WindowsPackageType=None `
-            /nologo
-        shell: pwsh
-
-      - name: Publish self-contained
-        run: |
-          dotnet publish src/GOGGUI.App/GOGGUI.App.csproj `
-            --configuration Release `
-            --runtime win-x64 `
-            --self-contained true `
-            -p:Platform=x64 `
-            -p:WindowsAppSDKSelfContained=true `
-            -p:WindowsPackageType=None `
-            --output publish/GogGui
+            /p:PublishDir="${{ github.workspace }}\publish\GogGui\" `
+            /p:PublishSingleFile=false `
+            /m /nologo
         shell: pwsh
 
       - name: List publish output
@@ -67,7 +82,7 @@ jobs:
       - name: Zip artifact
         run: |
           $branch = "${{ github.ref_name }}" -replace '[/\\:*?"<>|]', '-'
-          $sha    = "${{ github.sha }}".Substring(0,7)
+          $sha    = "${{ github.sha }}".Substring(0, 7)
           Compress-Archive `
             -Path publish/GogGui/* `
             -DestinationPath "publish/GogGui-x64-${branch}-${sha}.zip"
