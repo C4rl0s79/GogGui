@@ -69,19 +69,21 @@ jobs:
         shell: pwsh
         continue-on-error: true
 
-      - name: Zip artifact
+      - name: Prepare artifact name
+        id: artifact
         run: |
-          $branch = "${{ github.ref_name }}" -replace '[/\\:*?"<>|]', '-'
-          $sha    = "${{ github.sha }}".Substring(0, 7)
+          $safe = "${{ github.ref_name }}" -replace '[/\\:*?"<>|\r\n]', '-'
+          $sha  = "${{ github.sha }}".Substring(0, 7)
+          echo "name=GogGui-x64-${safe}" >> $env:GITHUB_OUTPUT
           Compress-Archive `
             -Path publish/GogGui/* `
-            -DestinationPath "publish/GogGui-x64-${branch}-${sha}.zip"
+            -DestinationPath "publish/GogGui-x64-${safe}-${sha}.zip"
         shell: pwsh
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: GogGui-x64-${{ github.ref_name }}
+          name: ${{ steps.artifact.outputs.name }}
           path: publish/GogGui-x64-*.zip
           if-no-files-found: error
           retention-days: 30
