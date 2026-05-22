@@ -2,7 +2,10 @@ name: Build & Publish GogGui
 
 on:
   push:
-    branches: [ main ]
+    branches:
+      - main
+      - 'fix/**'
+      - 'feature/**'
   pull_request:
     branches: [ main ]
   workflow_dispatch:
@@ -27,7 +30,7 @@ jobs:
       - name: Add MSBuild to PATH
         uses: microsoft/setup-msbuild@v2
 
-      - name: Restore
+      - name: Restore NuGet packages
         run: dotnet restore src/GOGGUI.App/GOGGUI.App.csproj
         shell: pwsh
 
@@ -63,14 +66,17 @@ jobs:
 
       - name: Zip artifact
         run: |
-          $sha = "${{ github.sha }}".Substring(0,7)
-          Compress-Archive -Path publish/GogGui/* -DestinationPath "publish/GogGui-x64-$sha.zip"
+          $branch = "${{ github.ref_name }}" -replace '[/\\:*?"<>|]', '-'
+          $sha    = "${{ github.sha }}".Substring(0,7)
+          Compress-Archive `
+            -Path publish/GogGui/* `
+            -DestinationPath "publish/GogGui-x64-${branch}-${sha}.zip"
         shell: pwsh
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: GogGui-x64
+          name: GogGui-x64-${{ github.ref_name }}
           path: publish/GogGui-x64-*.zip
           if-no-files-found: error
           retention-days: 30
