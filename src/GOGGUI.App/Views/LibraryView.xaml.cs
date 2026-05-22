@@ -15,15 +15,16 @@ public sealed partial class LibraryView : Page
     public LibraryView()
     {
         this.InitializeComponent();
-        var wsl = new WslProcessService();
-        var lgog = new LgogService(wsl);
+        var wsl      = new WslProcessService();
+        var lgog     = new LgogService(wsl);
         _settingsService = new AppSettingsService();
         _ = _settingsService.LoadAsync();
-        var scan = new LibraryScanService(_settingsService);
-        var cache = new CacheSyncService(_settingsService);
-        var updates = new UpdateCheckerService();
+        var scan     = new LibraryScanService(_settingsService);
+        var cache    = new CacheSyncService(_settingsService);
+        var updates  = new UpdateCheckerService();
+        var queue    = new DownloadQueueService(wsl, _settingsService);
         _coverService = new GameCoverService();
-        _vm = new LibraryViewModel(lgog, scan, cache, updates, _settingsService);
+        _vm = new LibraryViewModel(lgog, scan, cache, updates, _settingsService, queue);
 
         LibraryDirLabel.Text = _vm.LibraryDir;
 
@@ -106,7 +107,7 @@ public sealed partial class LibraryView : Page
     // --- Navigation ---
 
     private void GameCard_Tapped(object sender, Microsoft.UI.Xaml.Input.TappedRoutedEventArgs e)
-    {
+    	{
         if (sender is FrameworkElement el && el.DataContext is GameState game)
             Frame.Navigate(typeof(GameDetailsView), game);
     }
