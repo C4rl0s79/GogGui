@@ -15,12 +15,24 @@
                         SelectionChanged="NavView_SelectionChanged">
 
             <NavigationView.MenuItems>
-                <NavigationViewItem Tag="library" Icon="Library" Content="Library"/>
-                <NavigationViewItem Tag="settings" Icon="Setting" Content="Settings"/>
+                <NavigationViewItem Tag="library" Content="Library">
+                    <NavigationViewItem.Icon>
+                        <FontIcon Glyph="&#xE8F1;"/>
+                    </NavigationViewItem.Icon>
+                </NavigationViewItem>
+                <NavigationViewItem Tag="downloads" Content="Downloads">
+                    <NavigationViewItem.Icon>
+                        <FontIcon Glyph="&#xE896;"/>
+                    </NavigationViewItem.Icon>
+                </NavigationViewItem>
             </NavigationView.MenuItems>
 
             <NavigationView.FooterMenuItems>
-                <NavigationViewItem Tag="settings" Icon="Setting" Content="Settings"/>
+                <NavigationViewItem Tag="settings" Content="Settings">
+                    <NavigationViewItem.Icon>
+                        <FontIcon Glyph="&#xE713;"/>
+                    </NavigationViewItem.Icon>
+                </NavigationViewItem>
             </NavigationView.FooterMenuItems>
 
             <Frame x:Name="ContentFrame" NavigationFailed="ContentFrame_NavigationFailed"/>
