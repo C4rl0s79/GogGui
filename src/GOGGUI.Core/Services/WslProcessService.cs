@@ -26,7 +26,6 @@ public sealed class WslProcessService
         var stdOutTask = process.StandardOutput.ReadToEndAsync(cancellationToken);
         var stdErrTask = process.StandardError.ReadToEndAsync(cancellationToken);
 
-        // FIX #2: apply timeout via CancellationTokenSource
         using var timeoutCts = new CancellationTokenSource(CommandTimeout);
         using var linkedCts  = CancellationTokenSource.CreateLinkedTokenSource(
             cancellationToken, timeoutCts.Token);
@@ -70,7 +69,23 @@ public sealed class WslProcessService
         process.Start();
         process.BeginOutputReadLine();
         var stderrTask = process.StandardError.ReadToEndAsync(cancellationToken);
-        await process.WaitForExitAsync(cancellationToken);
+
+        // BUG FIX #6: previously WaitForExitAsync was called without error handling.
+        // When the CancellationToken fires, WaitForExitAsync throws
+        // OperationCanceledException, but the wsl.exe / lgogdownloader process kept
+        // running — continuing to consume bandwidth and potentially corrupting the
+        // partial download file.  Kill the entire process tree before re-throwing.
+        try
+        {
+            await process.WaitForExitAsync(cancellationToken);
+        }
+        catch (OperationCanceledException)
+        {
+            Log.Warning("WslProcess", "Streaming cancelled — killing process tree");
+            try { process.Kill(entireProcessTree: true); } catch { /* already exited */ }
+            throw; // re-throw so DownloadQueueService can mark the job as Cancelled
+        }
+
         var stderr = await stderrTask;
 
         if (process.ExitCode != 0)

@@ -8,23 +8,33 @@ namespace GOGGUI.Views;
 
 public sealed partial class LibraryView : Page
 {
-    private readonly LibraryViewModel _vm;
-    private readonly GameCoverService _coverService;
-    private readonly AppSettingsService _settingsService;
+    private readonly LibraryViewModel    _vm;
+    private readonly GameCoverService    _coverService;
+    private readonly AppSettingsService  _settingsService;
 
     public LibraryView()
     {
         this.InitializeComponent();
-        var wsl      = new WslProcessService();
-        var lgog     = new LgogService(wsl);
-        _settingsService = new AppSettingsService();
-        _ = _settingsService.LoadAsync();
+
+        // BUG FIX #4 / #5: use the app-level settings service that was already fully
+        // loaded in App.OnLaunched.  The previous code created a new AppSettingsService
+        // and called LoadAsync in a fire-and-forget fashion, so _settingsService.Current
+        // was still the default AppSettings() when AutoRefreshOnStart was read below.
+        // Using App.Settings also ensures that settings saved in SettingsView are
+        // immediately visible here (they share the same instance).
+        _settingsService = App.Settings;
+
+        var wsl  = new WslProcessService();
+        var lgog = new LgogService(wsl);
         var scan     = new LibraryScanService(_settingsService);
         var cache    = new CacheSyncService(_settingsService);
         var updates  = new UpdateCheckerService();
-        var queue    = new DownloadQueueService(wsl, _settingsService);
         _coverService = new GameCoverService();
-        _vm = new LibraryViewModel(lgog, scan, cache, updates, _settingsService, queue);
+
+        // BUG FIX #2: pass the shared App.DownloadQueue instead of creating a private
+        // DownloadQueueService.  The previous private instance was invisible to
+        // DownloadQueueView, so library-card downloads never appeared in the queue page.
+        _vm = new LibraryViewModel(lgog, scan, cache, updates, _settingsService, App.DownloadQueue);
 
         LibraryDirLabel.Text = _vm.LibraryDir;
 
@@ -95,7 +105,6 @@ public sealed partial class LibraryView : Page
 
     private void ViewToggle_Click(object sender, RoutedEventArgs e)
     {
-        // Use ReferenceEquals to avoid CS0252 ambiguous == on ToggleButton
         bool grid = ReferenceEquals(sender, GridViewToggle);
         GridViewToggle.IsChecked = grid;
         ListViewToggle.IsChecked = !grid;
@@ -107,7 +116,7 @@ public sealed partial class LibraryView : Page
     // --- Navigation ---
 
     private void GameCard_Tapped(object sender, Microsoft.UI.Xaml.Input.TappedRoutedEventArgs e)
-    	{
+    {
         if (sender is FrameworkElement el && el.DataContext is GameState game)
             Frame.Navigate(typeof(GameDetailsView), game);
     }

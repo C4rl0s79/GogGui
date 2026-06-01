@@ -1,0 +1,34 @@
+* [33m62eaaba[m[33m ([m[1;31morigin/fix/code-quality-improvements[m[33m)[m fix: add downloads navigation case to MainWindow
+* [33m9b91dd4[m fix: replace invalid Symbol.Library with FontIcon in NavigationView, remove duplicate Settings footer item
+* [33mc28b74d[m fix: add BoolToVisibilityConverter, update LibraryView.xaml to use it via xmlns:conv
+* [33m0d67fb3[m fix: BooleanToVisibilityConverter for bool->Visibility x:Bind, Mode=OneWay, remove emoji from XAML
+* [33m5e3899d[m fix: remove Bootstrap.Initialize — redundant with WindowsAppSDKSelfContained=true
+* [33md534b74[m fix: crash-on-launch — Bootstrap before InitializeComponent, unhandled exception handlers, fatal MessageBox
+* [33m45da674[m ci: sanitize branch name for artifact name (no slashes)
+* [33m0ecbbf1[m ci: fix PowerShell semicolon parsing in msbuild /t targets
+* [33m2ca206e[m ci: use msbuild-only publish, pin dotnet 8, add VS workload for WinAppSDK PRI tasks
+* [33m7984f86[m fix: pass DownloadQueueService to LibraryViewModel ctor in LibraryView
+* [33m3975d23[m ci: trigger build on fix branch + publish artifact from PR
+* [33m72c24bc[m fix: GameState uses INotifyPropertyChanged directly (no CT.Mvvm dep in Core) (#6 #7)
+* [33m00284b9[m fix: per-job extras flag, quoted slug, correct status mapping (#9 #5)
+* [33m694a938[m fix: use AppSettingsService ref, route download through queue, add scan CT (#3 #4 #10)
+* [33m1f4777a[m fix: implement INotifyPropertyChanged, cache NoCover (#6 #7)
+* [33madc5112[m fix: quote slug argument to prevent shell injection (#5)
+* [33ma06afce[m fix: add configurable timeout to WslProcessService (#2)
+* [33m85981dc[m fix: await LoadAsync, use DI for DownloadQueue (#1 #8)
+* [33mf6956ff[m[33m ([m[1;36mHEAD[m[33m -> [m[1;32mmain[m[33m, [m[1;31morigin/main[m[33m, [m[1;31morigin/HEAD[m[33m)[m fix: remove Program.cs, move Bootstrap.Initialize into App.OnLaunched (WinUI owns Main)
+* [33m970bd1b[m fix: correct Bootstrap namespace to Microsoft.Windows.ApplicationModel.DynamicDependency
+[31m|[m * [33m0da2011[m[33m ([m[1;31morigin/dependabot/github_actions/actions/upload-artifact-7[m[33m)[m build(deps): bump actions/upload-artifact from 4 to 7
+[31m|[m[31m/[m  
+[31m|[m * [33ma14b4d8[m[33m ([m[1;31morigin/dependabot/github_actions/microsoft/setup-msbuild-3[m[33m)[m build(deps): bump microsoft/setup-msbuild from 2 to 3
+[31m|[m[31m/[m  
+* [33m1892454[m fix: switch to unpackaged mode - remove MSIX tooling, add Bootstrap.Initialize in App
+* [33m6b2967f[m fix: remove duplicate dpiAwareness (2005 namespace conflict causing SxS activation error)
+* [33md79d460[m fix: add ReleaseDate+Version to GameMetadata, fix CS0252 ToggleButton comparison
+[33m|[m * [33m4b3a7bb[m[33m ([m[1;31morigin/dependabot/github_actions/actions/checkout-6[m[33m)[m build(deps): bump actions/checkout from 4 to 6
+[33m|[m[33m/[m  
+[33m|[m * [33m720a412[m[33m ([m[1;31morigin/dependabot/github_actions/actions/setup-dotnet-5[m[33m)[m build(deps): bump actions/setup-dotnet from 4 to 5
+[33m|[m[33m/[m  
+* [33m2ef3b36[m fix: Core targets net8.0-windows, build workflow publishes full self-contained ZIP
+* [33m56d0fe0[m feat: GameDetailsView rework + LogService with structured file logging
+* [33m21f93d5[m refactor: DownloadQueueService - single lgogdownloader call with pipe-separated slugs

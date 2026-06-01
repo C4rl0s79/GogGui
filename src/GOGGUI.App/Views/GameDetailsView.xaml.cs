@@ -26,16 +26,17 @@ public sealed partial class GameDetailsView : Page
 
         Log.Info("GameDetails", $"Opened: {game.Slug}");
 
-        var wsl = new WslProcessService();
+        var wsl  = new WslProcessService();
         var lgog = new LgogService(wsl);
-        var settingsService = new AppSettingsService();
-        await settingsService.LoadAsync();
         var metadataService = new GameMetadataService();
 
-        _vm = new GameDetailsViewModel(game, lgog, metadataService, settingsService);
+        // BUG FIX #4: use the shared app-level settings service instead of creating a
+        // new AppSettingsService and awaiting LoadAsync.  The shared instance is always
+        // up to date (including any changes the user just saved in SettingsView).
+        _vm = new GameDetailsViewModel(game, lgog, metadataService, App.Settings);
 
-        TitleLabel.Text  = game.Title;
-        SlugLabel.Text   = game.Slug;
+        TitleLabel.Text   = game.Title;
+        SlugLabel.Text    = game.Slug;
         ExtrasToggle.IsOn = _vm.DownloadExtras;
 
         ApplyCover(game);
@@ -83,10 +84,9 @@ public sealed partial class GameDetailsView : Page
     {
         if (_vm is null) return;
 
-        // Status badge
         var (badgeColor, badgeText) = _vm.Game.Status switch
         {
-            GameStatus.Complete       => ("#107c10", "✅ Complete"),
+            GameStatus.Complete        => ("#107c10", "✅ Complete"),
             GameStatus.UpdateAvailable => ("#e85e00", "🔄 Update available"),
             _                          => ("#555555", "⏳ Not downloaded")
         };
@@ -107,7 +107,7 @@ public sealed partial class GameDetailsView : Page
 
             if (!string.IsNullOrWhiteSpace(meta.Description?.Lead))
             {
-                DescriptionLabel.Text  = meta.Description.Lead;
+                DescriptionLabel.Text       = meta.Description.Lead;
                 DescriptionPanel.Visibility = Visibility.Visible;
             }
 
@@ -116,11 +116,11 @@ public sealed partial class GameDetailsView : Page
 
             if (!string.IsNullOrWhiteSpace(meta.Version))
             {
-                VersionLabel.Text = $"v{meta.Version}";
+                VersionLabel.Text       = $"v{meta.Version}";
                 VersionBadge.Visibility = Visibility.Visible;
             }
 
-            MetadataPanel.Visibility = Visibility.Visible;
+            MetadataPanel.Visibility   = Visibility.Visible;
             NoMetadataLabel.Visibility = Visibility.Collapsed;
             InstallersList.ItemsSource = meta.Installers;
             ExtrasList.ItemsSource     = meta.Extras;
@@ -131,7 +131,7 @@ public sealed partial class GameDetailsView : Page
         }
         else
         {
-            MetadataPanel.Visibility = Visibility.Collapsed;
+            MetadataPanel.Visibility   = Visibility.Collapsed;
             NoMetadataLabel.Visibility = Visibility.Visible;
             Log.Warning("GameDetails", $"{_vm.Game.Slug}: no metadata found");
         }
@@ -140,8 +140,9 @@ public sealed partial class GameDetailsView : Page
     private void AddToQueueButton_Click(object sender, RoutedEventArgs e)
     {
         if (_vm is null) return;
-        App.DownloadQueue.Enqueue(_vm.Game.Slug, _vm.Game.Title, ExtrasToggle.IsOn);
-        QueuedLabel.Text = $"✅ Added to queue — go to Download Queue to start";
+        App.DownloadQueue.Enqueue(_vm.Game.Slug, _vm.Game.Title,
+            includeExtras: ExtrasToggle.IsOn);
+        QueuedLabel.Text       = "✅ Added to queue — go to Download Queue to start";
         QueuedLabel.Visibility = Visibility.Visible;
         Log.Info("GameDetails", $"Queued: {_vm.Game.Slug}");
     }
@@ -149,8 +150,15 @@ public sealed partial class GameDetailsView : Page
     private void AddExtrasToQueueButton_Click(object sender, RoutedEventArgs e)
     {
         if (_vm is null) return;
-        App.DownloadQueue.Enqueue(_vm.Game.Slug + "__extras", _vm.Game.Title + " (extras)", includeExtras: true);
-        QueuedLabel.Text = $"✅ Extras added to queue";
+
+        // BUG FIX #3: the original code passed game.Slug + "__extras" as the slug.
+        // DownloadQueueService forwarded that verbatim to lgogdownloader as
+        //   --game 'gameslug__extras'
+        // which does not match any known game.  Use the real slug and set extrasOnly:true
+        // so the queue builds the correct --no-installers --extras command instead.
+        App.DownloadQueue.Enqueue(_vm.Game.Slug, _vm.Game.Title + " (extras only)",
+            includeExtras: true, extrasOnly: true);
+        QueuedLabel.Text       = "✅ Extras added to queue";
         QueuedLabel.Visibility = Visibility.Visible;
         Log.Info("GameDetails", $"Queued extras: {_vm.Game.Slug}");
     }

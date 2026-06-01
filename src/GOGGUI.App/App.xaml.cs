@@ -9,6 +9,12 @@ public partial class App : Application
     public static DownloadQueueService DownloadQueue { get; private set; } = null!;
     public static AppSettingsService   Settings      { get; private set; } = null!;
 
+    // BUG FIX #1: expose the main window so views can pass it to pickers/dialogs that
+    // require a real HWND (e.g. FolderPicker via WindowNative.GetWindowHandle).
+    // Application does NOT implement IWindowNative; passing App.Current to
+    // GetWindowHandle throws a COMException at runtime.
+    public static Window? MainWindow { get; private set; }
+
     private static readonly LogService Log = LogService.Instance;
 
     [DllImport("user32.dll", CharSet = CharSet.Unicode)]
@@ -66,6 +72,9 @@ public partial class App : Application
             Log.Info("App", $"Log file: {Log.LogFilePath}");
 
             var window = new MainWindow();
+            // BUG FIX #1: assign before Activate so the window handle is available
+            // the moment LibraryView / SettingsView constructors run.
+            MainWindow = window;
             window.Activate();
         }
         catch (Exception ex)

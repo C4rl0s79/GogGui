@@ -15,15 +15,27 @@ public enum DownloadJobStatus
 /// </summary>
 public sealed class DownloadJob : System.ComponentModel.INotifyPropertyChanged
 {
-    public string Slug { get; init; } = string.Empty;
-    public string Title { get; init; } = string.Empty;
-    public bool IncludeExtras { get; init; }
+    public string Slug          { get; init; } = string.Empty;
+    public string Title         { get; init; } = string.Empty;
+    public bool   IncludeExtras { get; init; }
+
+    // BUG FIX #3: previously there was no way to request extras-only through the queue.
+    // The workaround in GameDetailsView appended "__extras" to the slug, which caused
+    // lgogdownloader to look for a non-existent game named "slug__extras".
+    // This flag maps to --no-installers --extras so only extra content is downloaded.
+    public bool ExtrasOnly { get; init; }
 
     private DownloadJobStatus _status = DownloadJobStatus.Queued;
     public DownloadJobStatus Status
     {
         get => _status;
-        set { _status = value; OnPropertyChanged(nameof(Status)); OnPropertyChanged(nameof(StatusLabel)); OnPropertyChanged(nameof(IsActive)); }
+        set
+        {
+            _status = value;
+            OnPropertyChanged(nameof(Status));
+            OnPropertyChanged(nameof(StatusLabel));
+            OnPropertyChanged(nameof(IsActive));
+        }
     }
 
     private int _progressPercent;
