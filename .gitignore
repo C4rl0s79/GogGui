@@ -16,6 +16,9 @@ dist/
 __pycache__/
 *.py[cod]
 
+# Testy (nie idą na GitHub — absolutne minimum)
+tests/
+
 # Śmieci
 *.bak
 Thumbs.db
