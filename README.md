@@ -1,33 +1,53 @@
-# GOGGUI
+# GOG Manager
 
-GOGGUI is a Windows-first graphical frontend for `lgogdownloader` running in WSL.
+Desktopowy menedżer biblioteki **GOG** (Windows, Python + [pywebview]): logowanie
+do konta GOG, przeglądanie biblioteki, pobieranie **offline-instalatorów** i
+zależności (redist), instalacja/uruchamianie gier oraz pobieranie grafik
+(okładki, hero, logo — GOG / SteamGridDB). Interfejs to lekki HTML (`assets/`)
+w oknie natywnym.
 
-## Goals
-- Native-feeling Windows GUI for browsing a GOG library.
-- Use `lgogdownloader` in WSL as the backend.
-- Store persistent metadata and artwork cache outside the download folders.
-- Support optional GUI login via `lgogdownloader --gui-login` when available.
-- Keep XML verification data in a separate cache tree.
+> Wcześniej repozytorium zawierało prototyp w C#/.NET (WinUI, frontend dla
+> `lgogdownloader` w WSL). Został zastąpiony działającą, samodzielną wersją
+> w Pythonie (pobiera bezpośrednio z GOG, bez WSL).
 
-## Planned stack
-- Frontend: C# + WinUI 3
-- Backend integration: `wsl.exe` process execution
-- Metadata source: local JSON and artwork files produced by `lgogdownloader`
-- Persistent app config: JSON in app-local data folder
+## Wymagania
 
-## Proposed structure
-- `src/GOGGUI.App/` - WinUI application
-- `src/GOGGUI.Core/` - models, services, config, process wrapper
-- `docs/` - architecture notes and command flows
+**Runtime (zewnętrzne):**
+- **Microsoft Edge WebView2 Runtime** — backend GUI dla pywebview na Windows.
+  Na Windows 11 i większości Windows 10 jest już zainstalowany; w razie potrzeby:
+  <https://developer.microsoft.com/microsoft-edge/webview2/>.
+- **Konto GOG** — logowanie odbywa się w aplikacji (OAuth GOG); pobierane są
+  oficjalne offline-instalatory GOG.
 
-## MVP
-- First-run setup wizard
-- Login status check and optional GUI login
-- Library scan from configured download folder
-- Metadata cache in `cache/games`
-- XML cache in `xml/games`
-- Game details page
-- Download/update actions through `wsl.exe`
+**Python:**
+- **Python 3.10+** (Windows)
+- **pywebview** — okno natywne + most JS↔Python (wymagane)
+- *(opcjonalnie)* **zstandard** — szybsza (de)kompresja cache; przy braku
+  używany jest `lzma`/`zlib` z biblioteki standardowej
 
-## Notes
-This scaffold is an initial starting point. Creating the remote GitHub repository itself must be done from a GitHub-authenticated environment.
+```bash
+pip install -r requirements.txt
+```
+
+## Uruchomienie (ze źródeł)
+
+```bash
+python app.py
+```
+
+Stan aplikacji (tokeny, cache, ustawienia) powstaje obok pliku/`.exe`
+(`_gog_cache/`, `settings.json`). Pobrane instalatory trafiają do katalogu
+`GOGinstall/` (konfigurowalne w ustawieniach).
+
+## Wersja portable (.exe)
+
+Gotowe `GOGManager.exe` jest dołączane do [Releases](../../releases).
+Zbudowanie samodzielnie (PyInstaller):
+
+```bash
+pip install pyinstaller pywebview
+pyinstaller GOGManager.spec
+# wynik: dist/GOGManager.exe
+```
+
+Licencja: **GPL-2.0** (patrz [LICENSE](LICENSE)).

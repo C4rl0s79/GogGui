@@ -1,0 +1,2850 @@
+<!DOCTYPE html>
+<html lang="pl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>GOG Library JSON Sync</title>
+<link rel="icon" type="image/svg+xml" href="assets/favicon.svg">
+<style>
+/* ── variables ───────────────────────────────────────────── */
+:root {
+  /* ── Steam Dark (default theme) ── */
+  --bg:      #0b0f14;
+  --bg2:     #0e141b;
+  --panel:   #141b24;
+  --panel2:  #1b232e;
+  --panel3:  #212c39;
+  --line:    #2a3542;
+  --text:    #c7d5e0;
+  --muted:   #7c8894;
+  --accent:  #4a9fe8;   /* Steam blue */
+  --accent2: #2a7fd0;
+  --ok:      #a4d007;   /* Steam green (play) */
+  --ok2:     #6aa11a;
+  --err:     #d05a5a;
+  --warn:    #d0a030;
+  /* ── customisable via Settings ── */
+  --desc-bg:     #10161d;
+  --desc-text:   #b8c4cf;
+  --fs-list:     12px;
+  --fs-desc:     13px;
+  --fs-progress: 13px;
+  --fs-meta:     11px;
+  --bar-height:  8px;
+}
+:root[data-theme="amoled"] {
+  --bg:      #000000;
+  --bg2:     #050608;
+  --panel:   #0a0d11;
+  --panel2:  #10151b;
+  --panel3:  #161d25;
+  --line:    #23292f;
+  --desc-bg: #050608;
+}
+* { box-sizing: border-box; }
+html, body { height: 100%; margin: 0; }
+body {
+  font-family: Segoe UI, Inter, sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  overflow: hidden;
+  display: grid;
+  grid-template-rows: 54px 1fr 30px;
+  grid-template-columns: 100vw;
+  height: 100vh;
+}
+#content {
+  display: grid;
+  grid-template-columns: var(--sidebar-w, 340px) 1fr;
+  min-height: 0; overflow: hidden;
+}
+
+/* ── top global bar ──────────────────────────────────────── */
+#topbar {
+  display: flex; align-items: center; gap: 16px;
+  padding: 0 16px; background: var(--bg2);
+  border-bottom: 1px solid var(--line);
+}
+.tb-brand { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.tb-logo {
+  width: 30px; height: 30px; border-radius: 7px; flex: 0 0 auto;
+  background: linear-gradient(135deg, var(--accent), var(--accent2));
+  display: flex; align-items: center; justify-content: center; font-weight: 800; font-size: 12px; color: #fff;
+}
+.tb-name  { font-weight: 700; font-size: 13px; letter-spacing: .02em; line-height: 1.15; }
+.tb-sub   { font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; }
+.tb-search {
+  flex: 1; max-width: 460px; margin: 0 auto; position: relative;
+  display: flex; align-items: center;
+}
+.tb-search input {
+  width: 100%; box-sizing: border-box; padding: 8px 12px 8px 34px;
+  background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
+  color: var(--text); font-size: 12.5px; font-family: inherit;
+}
+.tb-search input:focus { outline: none; border-color: var(--accent); }
+.tb-search .tb-mag { position: absolute; left: 11px; color: var(--muted); font-size: 13px; pointer-events: none; }
+.tb-kbd {
+  position: absolute; right: 8px; font-size: 10px; color: var(--muted);
+  border: 1px solid var(--line); border-radius: 5px; padding: 2px 7px; background: var(--panel2);
+}
+.tb-nav { display: flex; align-items: center; gap: 4px; flex: 0 0 auto; }
+.tb-btn {
+  display: flex; align-items: center; gap: 6px; background: transparent; color: var(--muted);
+  border: 1px solid transparent; border-radius: 7px; padding: 7px 11px; font-size: 12px;
+  cursor: pointer; font-family: inherit; white-space: nowrap;
+}
+.tb-btn:hover { color: var(--text); background: var(--panel); }
+.tb-btn.login { color: var(--muted); }
+.tb-btn.login.in { color: var(--ok); }
+
+/* ── bottom status bar ───────────────────────────────────── */
+#statusbar {
+  display: flex; align-items: center; gap: 10px; padding: 0 14px;
+  background: var(--bg2); border-top: 1px solid var(--line);
+  font-size: 11px; color: var(--muted); overflow: hidden;
+}
+#statusbar .sb-tag {
+  font-weight: 700; letter-spacing: .05em; text-transform: uppercase; font-size: 10px;
+  padding: 2px 8px; border-radius: 5px; background: var(--panel2); color: var(--muted);
+}
+#statusbar.busy .sb-tag { background: rgba(74,159,232,.16); color: var(--accent); }
+#statusbar .sb-msg { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#statusbar .sb-mini {
+  display: flex; align-items: center; gap: 8px; min-width: 200px;
+}
+#statusbar .sb-track { flex: 1; height: 5px; border-radius: 3px; background: var(--panel2); overflow: hidden; max-width: 220px; }
+#statusbar .sb-fill { height: 100%; width: 0; background: linear-gradient(90deg, var(--accent2), var(--accent)); transition: width .2s; }
+#statusbar .sb-act { color: var(--muted); cursor: pointer; }
+#statusbar .sb-act:hover { color: var(--text); }
+
+/* ── sidebar ─────────────────────────────────────────────── */
+aside {
+  border-right: 1px solid var(--line);
+  background: var(--panel);
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  overflow: hidden;
+  position: relative;
+}
+aside header { padding: 16px 18px; border-bottom: 1px solid var(--line); flex: 0 0 auto; }
+.sidebar-logo  { font-weight: 800; letter-spacing: .07em; text-transform: uppercase; font-size: 13px; }
+.sidebar-cfg   { color: var(--muted); font-size: 11px; margin-top: 6px; line-height: 1.65; }
+.sidebar-cfg b { color: var(--text); font-weight: 600; }
+.sidebar-cfg .cfg-stat { margin-top: 5px; display: flex; align-items: center; gap: 10px; }
+.sidebar-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 7px;
+  margin-top: 12px;
+}
+.sidebar-actions .full { grid-column: 1 / -1; }
+.search-wrap { padding: 9px 11px; flex: 0 0 auto; }
+.list        { overflow-y: auto; padding: 4px 7px; flex: 1; min-height: 0; }
+
+/* ── main ────────────────────────────────────────────────── */
+main { height: 100%; overflow: hidden; display: flex; flex-direction: column; min-width: 0; }
+#game-view { flex: 1; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
+
+/* ── buttons ─────────────────────────────────────────────── */
+.btn {
+  background: var(--panel2);
+  color: var(--text);
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  padding: .48rem .8rem;
+  cursor: pointer;
+  font-size: 12px;
+  transition: border-color .12s, opacity .12s;
+  text-align: center;
+  white-space: nowrap;
+}
+.btn:hover            { border-color: var(--accent); }
+.btn.primary          { background: linear-gradient(180deg, var(--accent), var(--accent2)); color: #fff; border-color: transparent; }
+.btn.primary:hover    { filter: brightness(1.1); }
+.btn.play             { background: linear-gradient(180deg, var(--ok), var(--ok2)); color: #10160a; border-color: transparent; font-weight: 700; }
+.btn.play:hover       { filter: brightness(1.08); }
+.btn.btn-danger       { border-color: rgba(208,90,90,.45); color: #d88080; }
+.btn.btn-danger:hover { background: var(--err); color: #fff; border-color: transparent; }
+.btn:disabled         { opacity: .4; cursor: not-allowed; pointer-events: none; }
+.icon-btn {
+  background: transparent; border: 1px solid transparent; color: var(--muted);
+  border-radius: 7px; width: 30px; height: 30px; cursor: pointer; font-size: 14px; flex: 0 0 auto;
+}
+.icon-btn:hover { color: var(--text); background: var(--panel2); }
+
+.btn-xs {
+  background: transparent; color: var(--muted);
+  border: 1px solid var(--line); border-radius: 5px;
+  padding: 2px 7px; cursor: pointer; font-size: 11px; line-height: 1.5;
+}
+.btn-xs:hover      { color: var(--text); border-color: var(--muted); }
+.btn-xs.stop       { color: var(--err); border-color: var(--err); }
+.btn-xs.stop:hover { background: var(--err); color: #fff; }
+
+/* ── game list items ──────────────────────────────────────── */
+.item {
+  width: 100%;
+  display: grid;
+  grid-template-columns: 40px 1fr;
+  gap: 9px;
+  align-items: center;
+  padding: 7px 9px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  border-radius: 9px;
+  cursor: pointer;
+  font-size: var(--fs-list);
+}
+.item:hover, .item.active { background: var(--panel2); }
+.item-icon {
+  width: 40px; height: 40px;
+  border-radius: 9px;
+  object-fit: cover;
+  background: var(--panel2);
+  display: block;
+}
+
+/* status pip on icon */
+.status-pip {
+  position: absolute; bottom: 1px; right: 1px;
+  width: 9px; height: 9px;
+  border-radius: 50%;
+  border: 2px solid var(--panel);
+  pointer-events: none;
+}
+.pip-ok { background: var(--ok); }
+.pip-dl { background: var(--accent); }
+
+/* ── hero ────────────────────────────────────────────────── */
+.hero {
+  position: relative;
+  flex: 0 0 auto;
+  min-height: var(--hero-h, 168px);
+  border-bottom: 1px solid var(--line);
+}
+.hero-bg {
+  position: absolute; inset: 0; z-index: 0;
+  background-size: cover; background-position: center;
+  opacity: 1;
+}
+/* light gradient on the LEFT only — keeps the title readable, art stays crisp */
+.hero-scrim {
+  position: absolute; inset: 0; z-index: 1; pointer-events: none;
+  background: linear-gradient(90deg,
+    rgba(0,0,0,.62) 0%, rgba(0,0,0,.34) 28%, rgba(0,0,0,0) 52%);
+}
+.hero-content {
+  position: relative; z-index: 2;
+  padding: 16px 24px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+  height: 100%;
+}
+/* SGDB logos are transparent — no box, just the artwork with a soft shadow. */
+.hero-logo {
+  flex: 0 1 auto;
+  max-width: 48%;
+  height: 100%;
+  min-height: 96px;
+  display: flex; align-items: center; justify-content: flex-start;
+  background: none; border-radius: 0; overflow: visible;
+}
+.hero-logo img {
+  max-width: 100%;
+  max-height: calc(var(--hero-h, 168px) - 34px);
+  width: auto; height: auto; object-fit: contain;
+  filter: drop-shadow(0 2px 8px rgba(0,0,0,.75));
+}
+/* Fallback title shown only when a game has no logo artwork at all. */
+.hero-fallback-title {
+  margin: 0; font-size: 26px; line-height: 1.15; font-weight: 800;
+  text-shadow: 0 1px 3px rgba(0,0,0,.95), 0 0 6px rgba(0,0,0,.8);
+}
+.hero-buttons  { display: flex; flex-direction: column; gap: 7px; min-width: 172px; flex: 0 0 auto; }
+.hero-src-badge {
+  position: absolute; right: 10px; bottom: 8px; z-index: 3;
+  font-size: 10px; letter-spacing: .03em; color: var(--muted);
+  background: rgba(0,0,0,.45); border: 1px solid var(--line); border-radius: 5px;
+  padding: 2px 7px; pointer-events: none; text-transform: uppercase;
+}
+.hero-fix-btn {
+  position: absolute; right: 10px; bottom: 30px; z-index: 3;
+  background: rgba(0,0,0,.5); border: 1px solid var(--line); color: var(--muted);
+  border-radius: 6px; width: 26px; height: 24px; cursor: pointer; font-size: 12px;
+  opacity: 0; transition: opacity .15s;
+}
+.hero:hover .hero-fix-btn { opacity: 1; }
+.hero-fix-btn:hover { color: var(--text); border-color: var(--accent); }
+
+/* per-game art picker */
+.art-picker {
+  width: 900px; max-width: 96vw; height: 82vh; max-height: 94vh;
+  min-width: 520px; min-height: 400px;
+  display: flex; flex-direction: column;
+  overflow: auto; resize: both;              /* drag the bottom-right corner */
+}
+.ovr-sgdbid { display: flex; align-items: center; gap: 8px; padding: 10px 0; border-bottom: 1px solid var(--line); margin-bottom: 6px; flex: 0 0 auto; }
+.ovr-section { margin-top: 10px; flex: 1 1 0; min-height: 130px; display: flex; flex-direction: column; }
+.ovr-section-head { display: flex; align-items: center; justify-content: space-between; font-size: 12px; font-weight: 700; letter-spacing: .03em; text-transform: uppercase; color: var(--muted); margin-bottom: 8px; flex: 0 0 auto; }
+.ovr-section-head .ovr-hint { font-weight: 400; text-transform: none; letter-spacing: 0; opacity: .7; }
+/* Galleries grow to fill the (resizable) window and scroll when overflowing. */
+.ovr-gallery {
+  display: flex; flex-wrap: wrap; gap: 10px; align-content: flex-start;
+  flex: 1 1 0; min-height: 90px;
+  overflow-y: auto; padding: 6px;
+  border: 1px solid var(--line); border-radius: 8px; background: var(--bg2);
+}
+.ovr-thumb { position: relative; width: 220px; height: 103px; padding: 0; border: 2px solid var(--line); border-radius: 8px; overflow: hidden; cursor: pointer; background: var(--panel3); flex: 0 0 auto; }
+.ovr-thumb.logo { width: 180px; background: repeating-conic-gradient(var(--panel2) 0% 25%, var(--panel3) 0% 50%) 50% / 18px 18px; }
+.ovr-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.ovr-thumb.logo img { object-fit: contain; padding: 8px; }
+.ovr-thumb:hover { border-color: var(--accent); }
+.ovr-thumb.selected { border-color: var(--ok); box-shadow: 0 0 0 2px var(--ok) inset; }
+.ovr-badge { position: absolute; left: 5px; bottom: 5px; font-size: 9px; font-weight: 700; letter-spacing: .04em; padding: 2px 5px; border-radius: 4px; background: rgba(0,0,0,.7); color: #fff; }
+.ovr-thumb.selected .ovr-badge { background: var(--ok); color: #10160a; }
+
+/* game header in the left content column (title + status/platforms) */
+.game-head { margin-bottom: 14px; padding-bottom: 12px; border-bottom: 1px solid var(--line); }
+.game-title { margin: 0 0 8px; font-size: 22px; line-height: 1.15; font-weight: 700; }
+.game-subline { display: flex; flex-wrap: wrap; align-items: center; gap: 7px; }
+
+/* extras list (detail view) */
+.extra-row { display: flex; align-items: center; gap: 9px; padding: 5px 0; border-bottom: 1px solid var(--line); }
+.extra-row:last-child { border-bottom: none; }
+.extra-ico { flex: 0 0 auto; font-size: 14px; width: 18px; text-align: center; }
+.extra-name { flex: 1; min-width: 0; font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.extra-size { flex: 0 0 auto; font-size: 11px; color: var(--muted); }
+
+/* status chips */
+.chip {
+  display: inline-flex; align-items: center; gap: 4px;
+  border-radius: 999px; padding: 3px 10px;
+  font-size: 11px; font-weight: 600;
+}
+.chip-ok   { background: rgba(90,168,90,.15);  color: #8dd98d; border: 1px solid rgba(90,168,90,.25);  }
+.chip-dl   { background: rgba(79,152,163,.15); color: #7cc8d4; border: 1px solid rgba(79,152,163,.25); }
+.chip-none { background: rgba(255,255,255,.04); color: var(--muted); border: 1px solid var(--line); }
+
+/* ── content wrap ────────────────────────────────────────── */
+.wrap {
+  padding: 13px 15px;
+  display: grid;
+  grid-template-columns: var(--wrap-left, 1.5fr) 7px minmax(0, .9fr);
+  grid-template-rows: 1fr;
+  gap: 13px;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+.right-col { display: flex; flex-direction: column; gap: 13px; min-height: 0; overflow-y: auto; }
+
+/* ── cards ───────────────────────────────────────────────── */
+.card { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; display: flex; flex-direction: column; min-height: 0; }
+.card.fill { overflow: hidden; }
+.card h2 { margin: 0; padding: 11px 16px; border-bottom: 1px solid var(--line); font-size: 13px; font-weight: 600; flex: 0 0 auto; }
+.card .body { padding: 13px 16px; line-height: 1.7; overflow-y: auto; min-height: 0; flex: 1; font-size: 13px; }
+.card.fill .body { overflow-y: auto; }
+
+.description {
+  overflow-wrap: anywhere; word-break: break-word;
+  background: var(--desc-bg); color: var(--desc-text);
+  padding: 10px 12px; border-radius: 7px;
+  font-size: var(--fs-desc);
+}
+.description p, .description span, .description div, .description li,
+.description h1, .description h2, .description h3, .description td, .description th {
+  color: var(--desc-text) !important;
+  background-color: transparent !important;
+}
+.description img, .description table { max-width: 100%; }
+.description a { color: var(--accent); }
+
+/* metadata grid */
+.meta-grid { display: grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap: 8px; }
+.fact { background: var(--panel2); padding: 8px 10px; border-radius: 9px; }
+.fact .label { color: var(--muted); font-size: 11px; margin-bottom: 2px; }
+.fact .value { font-size: 12px; }
+
+/* screenshots */
+.screens { display: grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap: 8px; }
+.screen { aspect-ratio: 16/9; border-radius: 8px; overflow: hidden; background: var(--panel2); cursor: zoom-in; }
+.screen img { width: 100%; height: 100%; object-fit: cover; transition: transform .15s; }
+.screen:hover img { transform: scale(1.04); }
+
+/* resize gutters */
+.v-gutter {
+  position: absolute; top: 0; right: -4px; width: 8px; height: 100%;
+  cursor: col-resize; z-index: 60; background: transparent;
+}
+.v-gutter:hover, .v-gutter.dragging { background: var(--accent); opacity: .35; }
+.wrap-gutter {
+  cursor: col-resize; border-radius: 4px; align-self: stretch;
+  background: var(--line);
+}
+.wrap-gutter:hover, .wrap-gutter.dragging { background: var(--accent); }
+
+/* screenshot lightbox */
+.lightbox {
+  position: fixed; inset: 0; z-index: 300;
+  background: rgba(0,0,0,.88);
+  display: flex; align-items: center; justify-content: center;
+  cursor: zoom-out;
+}
+.lightbox img {
+  max-width: 94vw; max-height: 94vh;
+  border-radius: 8px; box-shadow: 0 8px 40px rgba(0,0,0,.6);
+}
+
+/* ── misc ────────────────────────────────────────────────── */
+.pill {
+  display: inline-block; border: 1px solid var(--line); border-radius: 999px;
+  padding: 2px 8px; font-size: 11px; color: var(--muted); margin-right: 4px;
+}
+.small  { color: var(--muted); font-size: 11px; }
+.search {
+  width: 100%; padding: 8px 11px;
+  border-radius: 9px; border: 1px solid var(--line);
+  background: var(--bg); color: var(--text); font-size: 13px;
+}
+.search:focus { outline: none; border-color: var(--accent); }
+
+/* inline dot (for cfg stats) */
+.dot-sm { display: inline-block; width: 7px; height: 7px; border-radius: 50%; vertical-align: middle; margin-right: 3px; }
+.dot-sm.ok { background: var(--ok); }
+.dot-sm.dl { background: var(--accent); }
+.dot-sm.none { background: var(--muted); }
+
+/* ═══════════════════════════════════════
+   ACTIVITY PANEL  (progress bars + completions)
+═══════════════════════════════════════ */
+.act-panel {
+  position: fixed; left: 0; right: 0; bottom: 30px; z-index: 120;
+  height: var(--activity-h, 300px); max-height: 60vh;
+  border-top: 1px solid var(--line);
+  background: var(--panel);
+  display: flex; flex-direction: column;
+  transform: translateY(calc(100% + 30px));
+  transition: transform .22s ease;
+  box-shadow: 0 -12px 40px rgba(0,0,0,.4);
+}
+.act-panel.open { transform: translateY(0); }
+.act-drag { order: -1; }
+
+/* horizontal resize gutters (hero height, activity height) */
+.h-gutter {
+  flex: 0 0 7px; height: 7px;
+  cursor: row-resize; background: var(--line);
+}
+.h-gutter:hover, .h-gutter.dragging { background: var(--accent); }
+
+.act-header {
+  flex: 0 0 38px;
+  display: flex; align-items: center; gap: 8px;
+  padding: 0 14px;
+  background: var(--panel2);
+  border-bottom: 1px solid var(--line);
+  user-select: none; font-size: 12px;
+}
+.act-title  { font-weight: 700; letter-spacing: .04em; font-size: 11px; text-transform: uppercase; }
+.act-status { color: var(--muted); font-size: 11px; }
+.act-spacer { flex: 1; }
+
+/* body = left (slots) + right (done list) */
+.act-body {
+  flex: 1; min-height: 0;
+  display: flex; overflow: hidden;
+}
+
+/* ── left: active progress bars ── */
+.act-progress {
+  flex: 1; min-width: 0;
+  padding: 11px 14px 8px;
+  overflow-y: auto;
+}
+
+.slot { margin-bottom: 11px; }
+.slot:last-child { margin-bottom: 0; }
+.slot-header {
+  display: flex; align-items: baseline; gap: 7px;
+  margin-bottom: 4px;
+  font-size: var(--fs-progress); line-height: 1.3;
+}
+.slot-num  { color: var(--accent); font-weight: 700; min-width: 22px; }
+.slot-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.slot-pct  { color: var(--muted); font-size: var(--fs-meta); min-width: 34px; text-align: right; }
+.track {
+  height: var(--bar-height); background: var(--panel2); border-radius: 4px; overflow: hidden;
+}
+.fill {
+  height: 100%; background: var(--accent); border-radius: 4px;
+  transition: width .35s linear;
+}
+.slot.done .fill  { background: var(--ok); }
+.slot.done .slot-pct { color: var(--ok); }
+.slot-meta {
+  display: flex; justify-content: space-between;
+  font-size: var(--fs-meta); color: var(--muted); margin-top: 4px;
+}
+.total-row {
+  margin-top: 9px; padding-top: 8px;
+  border-top: 1px solid var(--line);
+  display: flex; gap: 16px; flex-wrap: wrap;
+  font-size: var(--fs-meta); color: var(--muted);
+}
+
+/* ── right: completed files ── */
+.act-done {
+  width: 210px; flex: 0 0 210px;
+  border-left: 1px solid var(--line);
+  padding: 10px 12px;
+  overflow-y: auto;
+  display: flex; flex-direction: column;
+}
+.done-title {
+  font-size: 10px; text-transform: uppercase;
+  letter-spacing: .06em; color: var(--muted);
+  padding-bottom: 7px; margin-bottom: 2px;
+  border-bottom: 1px solid var(--line);
+  flex: 0 0 auto;
+}
+#doneList { flex: 1; min-height: 0; }
+.done-item {
+  padding: 5px 0;
+  border-bottom: 1px solid var(--line);
+}
+.done-item:last-child { border-bottom: 0; }
+.ci-name {
+  font-size: 11px; color: var(--text);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.ci-name::before { content: "✓ "; color: var(--ok); font-weight: 700; }
+.ci-speed { font-size: 10px; color: var(--muted); margin-top: 1px; }
+
+/* ══════════════════════════════════════
+   SETTINGS MODAL
+══════════════════════════════════════ */
+.settings-overlay {
+  position: fixed; inset: 0; z-index: 200;
+  background: rgba(0,0,0,.65);
+  display: flex; align-items: center; justify-content: center;
+}
+.settings-box {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  padding: 24px 28px;
+  width: 360px;
+  max-height: 90vh;
+  overflow-y: auto;
+}
+.settings-box h3 {
+  margin: 0 0 18px;
+  font-size: 15px; font-weight: 700;
+}
+/* ── download selection modal ── */
+.dl-box { width: 620px; }
+.dl-group { margin-bottom: 18px; }
+.dl-group-title {
+  font-size: 10px; text-transform: uppercase; letter-spacing: .07em;
+  color: var(--muted); margin: 0 0 8px; padding-bottom: 4px;
+  border-bottom: 1px solid var(--line);
+}
+.dl-row {
+  display: flex; align-items: center; gap: 10px;
+  padding: 6px 4px; font-size: 12px; border-radius: 6px;
+}
+.dl-row:hover { background: rgba(127,127,127,.08); }
+.dl-row.heavy { opacity: .82; }
+.dl-row input[type=checkbox] { width: 15px; height: 15px; flex: none; cursor: pointer; }
+.dl-main { flex: 1; min-width: 0; }
+.dl-name { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.dl-meta { color: var(--muted); font-size: 10.5px; margin-top: 1px; }
+.dl-size { color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.dl-badge {
+  font-size: 9px; text-transform: uppercase; letter-spacing: .05em;
+  background: var(--accent); color: #fff; border-radius: 4px;
+  padding: 1px 5px; margin-left: 6px;
+}
+.dl-foot {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 12px; margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--line);
+}
+.dl-sum { font-size: 12px; color: var(--muted); }
+.dl-sum b { color: var(--text, inherit); font-variant-numeric: tabular-nums; }
+.dl-empty { color: var(--muted); font-size: 12px; padding: 18px 4px; }
+.sg { margin-bottom: 16px; }
+.sg-title {
+  font-size: 10px; text-transform: uppercase;
+  letter-spacing: .07em; color: var(--muted);
+  margin-bottom: 9px;
+}
+.srow {
+  display: flex; align-items: center; gap: 10px;
+  margin-bottom: 8px; font-size: 12px;
+}
+.srow label { flex: 1; color: var(--muted); }
+.srow input[type=color] {
+  width: 36px; height: 24px; border-radius: 5px;
+  border: 1px solid var(--line); background: none;
+  cursor: pointer; padding: 1px;
+}
+.srow input[type=number] {
+  width: 58px; padding: 4px 7px;
+  border-radius: 7px; border: 1px solid var(--line);
+  background: var(--panel2); color: var(--text); font-size: 12px;
+  text-align: center;
+}
+.srow input[type=range] { flex: 1; accent-color: var(--accent); }
+.srow .val { color: var(--text); min-width: 28px; text-align: right; font-size: 12px; }
+.settings-actions {
+  display: flex; gap: 8px; margin-top: 20px; flex-wrap: wrap;
+}
+.settings-actions .btn { flex: 1; font-size: 12px; padding: .45rem .6rem; }
+
+/* running dot */
+.dot {
+  width: 7px; height: 7px; border-radius: 50%; flex: 0 0 auto; transition: background .2s;
+}
+.dot.idle    { background: #3a3937; }
+.dot.running { background: #f0c060; animation: blink 1s ease-in-out infinite; }
+.dot.ok      { background: var(--ok); }
+.dot.err     { background: var(--err); }
+@keyframes blink { 0%, 100% { opacity: 1; } 50% { opacity: .2; } }
+
+/* ── language toggle ─────────────────────────────────────── */
+.lang-toggle, .wiz-lang { display: inline-flex; gap: 4px; }
+.lang-btn {
+  background: var(--panel2); color: var(--muted);
+  border: 1px solid var(--line); border-radius: 6px;
+  padding: 5px 12px; font-size: 12px; cursor: pointer; font-family: inherit;
+}
+.lang-btn:hover  { color: var(--text); border-color: var(--muted); }
+.lang-btn.active { background: var(--accent); color: #fff; border-color: transparent; }
+
+/* ── download modal extras ───────────────────────────────── */
+.dl-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.dl-head h3 { margin: 0; }
+.dl-group-head {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 10px; margin-bottom: 6px;
+}
+.dl-group-title { font-size: 12px; font-weight: 700; color: var(--text); text-transform: uppercase; letter-spacing: .04em; }
+.dl-selall {
+  font-size: 11px; color: var(--muted); cursor: pointer; user-select: none;
+  border: 1px solid var(--line); border-radius: 5px; padding: 2px 8px; background: transparent; font-family: inherit;
+}
+.dl-selall:hover { color: var(--text); border-color: var(--muted); }
+.dl-flag { font-size: 11px; opacity: .85; margin-left: 6px; }
+.btn.btn-ghost { background: transparent; border-color: transparent; color: var(--muted); }
+.btn.btn-ghost:hover { color: var(--text); border-color: var(--line); }
+
+/* ── onboarding wizard ───────────────────────────────────── */
+.wiz-overlay {
+  position: fixed; inset: 0; z-index: 190;
+  background: rgba(10,10,9,.86); backdrop-filter: blur(3px);
+  display: flex; align-items: center; justify-content: center;
+}
+.wiz-box {
+  width: 560px; max-width: 92vw; max-height: 90vh; overflow: auto;
+  background: var(--panel); border: 1px solid var(--line); border-radius: 16px;
+  padding: 22px 26px; box-shadow: 0 24px 80px rgba(0,0,0,.5);
+}
+.wiz-top { display: flex; align-items: center; justify-content: space-between; margin-bottom: 18px; }
+.wiz-brand { font-weight: 800; letter-spacing: .08em; text-transform: uppercase; font-size: 13px; color: var(--accent); }
+.wiz-steps { display: flex; gap: 8px; margin-bottom: 20px; }
+.wiz-dot { flex: 1; height: 4px; border-radius: 3px; background: var(--line); transition: background .2s; }
+.wiz-dot.active { background: var(--accent); }
+.wiz-dot.done   { background: var(--ok); }
+.wiz-body { min-height: 220px; }
+.wiz-h { font-size: 20px; font-weight: 700; margin: 0 0 6px; }
+.wiz-sub { color: var(--muted); font-size: 13px; line-height: 1.55; margin: 0 0 20px; }
+.wiz-dir { margin-bottom: 14px; }
+.wiz-dir-label { font-size: 12px; color: var(--muted); margin-bottom: 5px; }
+.wiz-dir-row { display: flex; align-items: center; gap: 10px; }
+.wiz-dir-val {
+  flex: 1; font-size: 12px; padding: 8px 10px; border-radius: 8px;
+  background: var(--panel2); border: 1px solid var(--line);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text);
+}
+.wiz-dir-val.empty { color: var(--muted); font-style: italic; }
+.wiz-big-status {
+  display: flex; align-items: center; gap: 10px; padding: 14px 16px;
+  border-radius: 10px; background: var(--panel2); border: 1px solid var(--line);
+  font-size: 14px; margin-bottom: 16px;
+}
+.wiz-big-status.ok { border-color: rgba(90,168,90,.4); color: #8dd98d; }
+.wiz-note { font-size: 12px; color: var(--muted); line-height: 1.5; }
+.wiz-foot { display: flex; align-items: center; gap: 8px; margin-top: 22px; padding-top: 18px; border-top: 1px solid var(--line); }
+
+/* ── sidebar filter tabs + sort ──────────────────────────── */
+.sb-filters { display: flex; gap: 4px; padding: 0 11px 8px; flex: 0 0 auto; }
+.sb-tab {
+  flex: 1; background: transparent; color: var(--muted); font-family: inherit;
+  border: 1px solid var(--line); border-radius: 7px; padding: 6px 4px; font-size: 11px;
+  cursor: pointer; white-space: nowrap; text-overflow: ellipsis; overflow: hidden;
+}
+.sb-tab:hover  { color: var(--text); }
+.sb-tab.active { background: var(--accent); color: #fff; border-color: transparent; }
+.sb-subbar { display: flex; align-items: center; justify-content: space-between; padding: 0 13px 6px; flex: 0 0 auto; }
+.sb-sort { background: transparent; border: none; color: var(--muted); font-size: 11px; cursor: pointer; font-family: inherit; display: flex; align-items: center; gap: 5px; }
+.sb-sort:hover { color: var(--text); }
+.sb-count { font-size: 11px; color: var(--muted); }
+
+/* ── tabbed settings ─────────────────────────────────────── */
+.settings-box.tabbed {
+  width: 820px; max-width: 94vw; height: 560px; max-height: 88vh;
+  padding: 0; display: grid; grid-template-columns: 210px 1fr; overflow: hidden;
+}
+.set-tabs { background: var(--bg2); border-right: 1px solid var(--line); padding: 16px 10px; display: flex; flex-direction: column; gap: 3px; }
+.set-tabs-title { font-size: 10px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); padding: 4px 10px 10px; }
+.set-tab {
+  display: flex; align-items: center; gap: 9px; text-align: left; font-family: inherit;
+  background: transparent; border: none; color: var(--muted); border-radius: 8px;
+  padding: 9px 11px; font-size: 13px; cursor: pointer;
+}
+.set-tab:hover  { background: var(--panel2); color: var(--text); }
+.set-tab.active { background: var(--panel3); color: var(--text); }
+.set-panels { position: relative; overflow-y: auto; padding: 24px 28px 76px; }
+.set-panel { display: none; }
+.set-panel.active { display: block; }
+.set-panel h2 { margin: 0 0 18px; font-size: 20px; font-weight: 700; }
+.set-footer {
+  position: absolute; left: 0; right: 0; bottom: 0; display: flex; gap: 8px; justify-content: flex-end;
+  padding: 14px 28px; background: var(--panel); border-top: 1px solid var(--line);
+}
+.dir-row { display: flex; align-items: center; gap: 12px; justify-content: space-between; padding: 11px 0; border-bottom: 1px solid var(--line); }
+.dir-label { font-size: 12px; color: var(--muted); margin-bottom: 4px; }
+.dir-val { font-size: 12px; color: var(--text); word-break: break-all; }
+
+/* ── download modal head/presets ─────────────────────────── */
+.dl-head { align-items: flex-start; }
+.dl-kicker { font-size: 10px; text-transform: uppercase; letter-spacing: .1em; color: var(--accent); font-weight: 700; }
+.dl-head h3 { margin: 2px 0 3px; }
+.dl-subtitle { font-size: 12px; color: var(--muted); }
+.dl-presets { display: flex; align-items: center; gap: 8px; padding: 10px 0; border-bottom: 1px solid var(--line); margin-bottom: 6px; }
+.dl-presets-label { font-size: 10px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); margin-right: 2px; }
+.dl-mono { font-size: 9px; font-weight: 700; padding: 1px 5px; border-radius: 4px; background: var(--panel3); color: var(--muted); letter-spacing: .03em; margin-left: 6px; }
+
+/* ── command palette ─────────────────────────────────────── */
+.palette-overlay { position: fixed; inset: 0; z-index: 260; background: rgba(6,9,13,.7); backdrop-filter: blur(3px); display: flex; align-items: flex-start; justify-content: center; padding-top: 12vh; }
+.palette-box { width: 600px; max-width: 92vw; background: var(--panel); border: 1px solid var(--line); border-radius: 14px; overflow: hidden; box-shadow: 0 24px 80px rgba(0,0,0,.55); }
+.palette-search { display: flex; align-items: center; gap: 10px; padding: 14px 16px; border-bottom: 1px solid var(--line); position: relative; }
+.palette-search .tb-mag { position: static; }
+.palette-search input { flex: 1; background: transparent; border: none; outline: none; color: var(--text); font-size: 15px; font-family: inherit; }
+.palette-search .tb-kbd { position: static; }
+.palette-results { max-height: 52vh; overflow-y: auto; padding: 6px; }
+.pal-item { display: flex; align-items: center; gap: 11px; padding: 9px 12px; border-radius: 8px; cursor: pointer; }
+.pal-item.active, .pal-item:hover { background: var(--panel3); }
+.pal-ico { width: 26px; height: 26px; border-radius: 5px; object-fit: cover; background: var(--panel2); flex: 0 0 auto; display: flex; align-items: center; justify-content: center; font-size: 13px; }
+.pal-main { flex: 1; min-width: 0; }
+.pal-name { font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pal-sub  { font-size: 11px; color: var(--muted); }
+.pal-kind { font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; }
+.pal-section { font-size: 10px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); padding: 10px 12px 4px; }
+
+/* ── toasts ──────────────────────────────────────────────── */
+#toasts { position: fixed; right: 16px; bottom: 42px; z-index: 400; display: flex; flex-direction: column; gap: 8px; align-items: flex-end; }
+.toast {
+  display: flex; align-items: center; gap: 9px; min-width: 220px; max-width: 380px;
+  background: var(--panel2); border: 1px solid var(--line); border-left: 3px solid var(--accent);
+  border-radius: 9px; padding: 10px 14px; font-size: 12.5px; color: var(--text);
+  box-shadow: 0 8px 30px rgba(0,0,0,.4); animation: toastIn .22s ease;
+}
+.toast.ok  { border-left-color: var(--ok); }
+.toast.err { border-left-color: var(--err); }
+.toast .toast-ico { font-size: 15px; }
+@keyframes toastIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+@keyframes toastOut { to { opacity: 0; transform: translateX(20px); } }
+.toast.leaving { animation: toastOut .2s ease forwards; }
+</style>
+</head>
+<body>
+
+<!-- ═══════ TOP GLOBAL BAR ═══════ -->
+<div id="topbar">
+  <div class="tb-brand">
+    <div class="tb-logo">GOG</div>
+    <div>
+      <div class="tb-name">GOG Library Manager</div>
+      <div class="tb-sub" data-i18n="tb.subtitle">Zarządzaj swoją biblioteką GOG lokalnie</div>
+    </div>
+  </div>
+  <div class="tb-search" onclick="openPalette()">
+    <span class="tb-mag">🔍</span>
+    <input id="paletteHint" data-i18n-ph="tb.searchPh" placeholder="Szukaj w bibliotece…" readonly>
+    <span class="tb-kbd">Ctrl K</span>
+  </div>
+  <div class="tb-nav">
+    <button class="tb-btn" id="tbSync" data-cmd><span>⟳</span> <span data-i18n="tb.sync">Synchronizuj bibliotekę</span></button>
+    <button class="tb-btn" id="tbUpdateAll" data-cmd><span>⟳</span> <span data-i18n="tb.updateAll">Aktualizuj wszystko</span></button>
+    <button class="tb-btn" id="tbLog" onclick="togglePanel(true)"><span>🗒</span> <span data-i18n="tb.log">Dziennik</span></button>
+    <button class="tb-btn" onclick="openSettings()"><span>⚙</span> <span data-i18n="tb.settings">Ustawienia</span></button>
+    <button class="tb-btn login" id="tbLogin" onclick="openSettings('account')"><span id="tbLoginDot">◌</span> <span id="tbLoginTxt" data-i18n="tb.notLoggedIn">Nie zalogowano</span></button>
+  </div>
+</div>
+
+<div id="content">
+
+<!-- ═══════ SIDEBAR ═══════ -->
+<aside>
+  <div class="search-wrap">
+    <input class="search" id="q" data-i18n-ph="sidebar.searchPh" placeholder="Szukaj gry…" autocomplete="off">
+  </div>
+  <div class="sb-filters">
+    <button class="sb-tab active" data-filter="all"        onclick="setFilter('all')"        data-i18n="filter.all">Wszystkie</button>
+    <button class="sb-tab"        data-filter="installed"  onclick="setFilter('installed')"  data-i18n="filter.installed">Zainstalowane</button>
+    <button class="sb-tab"        data-filter="downloaded" onclick="setFilter('downloaded')" data-i18n="filter.downloaded">Pobrane</button>
+  </div>
+  <div class="sb-subbar">
+    <button class="sb-sort" id="sortBtn" onclick="cycleSort()">
+      <span>⇅</span> <span id="sortLabel" data-i18n="sort.title">Alfabetycznie</span>
+    </button>
+    <span class="sb-count" id="listCount"></span>
+  </div>
+  <div class="list" id="list"></div>
+  <div class="v-gutter" id="sidebarGutter" title="Przeciągnij, aby zmienić szerokość"></div>
+</aside>
+
+<!-- ═══════ MAIN ═══════ -->
+<main>
+
+  <!-- game view – re-rendered on each selection change -->
+  <div id="game-view">
+    <div style="padding:24px" class="small" data-i18n="detail.init">Inicjalizacja…</div>
+  </div>
+
+  <!-- drag to resize the activity panel height -->
+  <div class="h-gutter" id="activityGutter" title="Przeciągnij, aby zmienić wysokość"></div>
+
+  <!-- activity panel: bottom drawer (toggle via Dziennik) -->
+  <div class="act-panel" id="actPanel">
+    <div class="act-header">
+      <span class="dot idle" id="actDot"></span>
+      <span class="act-title" data-i18n="act.title">Pobieranie</span>
+      <span class="act-status" id="actStatus" data-i18n="act.idle">gotowy</span>
+      <span class="act-spacer"></span>
+      <button class="btn-xs stop" id="killBtn" style="display:none" onclick="killCmd()" data-i18n="act.stop">■ Stop</button>
+      <button class="btn-xs" onclick="clearActivity()" data-i18n="act.clear">Wyczyść</button>
+      <button class="btn-xs" id="collapseBtn" onclick="togglePanel(false)">▼</button>
+    </div>
+    <div class="act-drag h-gutter" id="activityGutter" title="Przeciągnij, aby zmienić wysokość"></div>
+    <div class="act-body">
+      <!-- left: slot progress bars -->
+      <div class="act-progress" id="actProgress">
+        <div id="slotsContainer"></div>
+        <div id="totalStats"></div>
+      </div>
+      <!-- right: completed files list -->
+      <div class="act-done" id="actDone">
+        <div class="done-title" data-i18n="act.done">Pobrane pliki</div>
+        <div id="doneList"></div>
+      </div>
+    </div>
+  </div>
+</main>
+
+</div><!-- /#content -->
+
+<!-- ═══════ BOTTOM STATUS BAR ═══════ -->
+<div id="statusbar">
+  <span class="sb-tag" id="sbTag" data-i18n="sb.idle">Bezczynny</span>
+  <span class="sb-msg" id="sbMsg" data-i18n="sb.noTasks">Brak aktywnych zadań. Rozpocznij pobieranie z widoku gry.</span>
+  <div class="sb-mini" id="sbMini" style="display:none">
+    <span id="sbMiniPct" class="small"></span>
+    <div class="sb-track"><div class="sb-fill" id="sbFill"></div></div>
+    <span class="sb-act" onclick="togglePanel(true)" data-i18n="sb.details">Szczegóły</span>
+  </div>
+</div>
+
+<!-- ═══════ OVERLAYS (fixed, outside layout flow) ═══════ -->
+
+  <!-- onboarding wizard (hidden until boot decides) -->
+  <div class="wiz-overlay" id="wizard" style="display:none">
+    <div class="wiz-box">
+      <div class="wiz-top">
+        <div class="wiz-brand">GOG Library</div>
+        <div class="wiz-lang">
+          <button class="lang-btn" id="wiz-lang-pl" onclick="setLang('pl', true); syncLangButtons()">PL</button>
+          <button class="lang-btn" id="wiz-lang-en" onclick="setLang('en', true); syncLangButtons()">EN</button>
+        </div>
+      </div>
+      <div class="wiz-steps" id="wizDots"></div>
+      <div class="wiz-body" id="wizBody"></div>
+      <div class="wiz-foot">
+        <button class="btn btn-ghost" id="wizSkip" onclick="wizSkip()" data-i18n="wiz.skip">Pomiń konfigurację</button>
+        <span style="flex:1"></span>
+        <button class="btn" id="wizBack" onclick="wizGo(-1)" data-i18n="wiz.back">← Wstecz</button>
+        <button class="btn primary" id="wizNext" onclick="wizGo(1)" data-i18n="wiz.next">Dalej →</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- settings modal (hidden) -->
+  <div class="settings-overlay" id="settingsModal" style="display:none">
+    <div class="settings-box tabbed">
+      <div class="set-tabs">
+        <div class="set-tabs-title" data-i18n="set.title">Ustawienia</div>
+        <button class="set-tab active" data-tab="appearance"  onclick="setSettingsTab('appearance')"><span>🎨</span> <span data-i18n="set.tab.appearance">Wygląd</span></button>
+        <button class="set-tab"        data-tab="directories" onclick="setSettingsTab('directories')"><span>🗂</span> <span data-i18n="set.tab.directories">Katalogi</span></button>
+        <button class="set-tab"        data-tab="downloads"   onclick="setSettingsTab('downloads')"><span>⬇</span> <span data-i18n="set.tab.downloads">Pobieranie</span></button>
+        <button class="set-tab"        data-tab="account"     onclick="setSettingsTab('account')"><span>👤</span> <span data-i18n="set.tab.account">Konto</span></button>
+        <button class="set-tab"        data-tab="advanced"    onclick="setSettingsTab('advanced')"><span>⚙</span> <span data-i18n="set.tab.advanced">Zaawansowane</span></button>
+        <span style="flex:1"></span>
+        <button class="set-tab" onclick="closeSettings()"><span>✕</span> <span data-i18n="set.close2">Zamknij</span></button>
+      </div>
+
+      <div class="set-panels">
+        <!-- APPEARANCE -->
+        <div class="set-panel active" data-panel="appearance">
+          <h2 data-i18n="set.tab.appearance">Wygląd</h2>
+          <div class="sg-title" data-i18n="set.language">Język / Language</div>
+          <div class="lang-toggle" style="margin-bottom:20px">
+            <button class="lang-btn" id="lang-pl" onclick="setLang('pl', true); syncLangButtons()">🇵🇱 Polski</button>
+            <button class="lang-btn" id="lang-en" onclick="setLang('en', true); syncLangButtons()">🇬🇧 English</button>
+          </div>
+          <div class="sg-title" data-i18n="set.theme">Motyw</div>
+          <div class="lang-toggle" style="margin-bottom:20px">
+            <button class="lang-btn" id="theme-steam"  onclick="setTheme('steam')">Steam Dark</button>
+            <button class="lang-btn" id="theme-amoled" onclick="setTheme('amoled')">AMOLED</button>
+          </div>
+          <div class="sg-title" data-i18n="set.sgdb">SteamGridDB (grafika hero + logo)</div>
+          <div class="wiz-note" style="margin-bottom:8px" data-i18n="set.sgdbHint">Lepsze tła i logo niż z GOG. Klucz API zdobędziesz na steamgriddb.com/profile/preferences/api.</div>
+          <div class="srow">
+            <input type="password" id="s-sgdb-key" placeholder="SGDB API key"
+                   style="flex:1;min-width:0;background:var(--panel2);border:1px solid var(--line);border-radius:7px;padding:7px 10px;color:var(--text);font-family:inherit">
+            <button class="btn btn-xs" onclick="testSgdb()" data-i18n="set.test">Testuj</button>
+          </div>
+          <div class="wiz-note" id="sgdbTestMsg" style="margin:6px 0 6px"></div>
+          <div class="wiz-note" id="secBackend" style="margin:0 0 14px;opacity:.85"></div>
+          <div class="srow">
+            <label data-i18n="set.heroSource">Tło (hero)</label>
+            <div class="lang-toggle">
+              <button class="lang-btn" id="hero-gog"  onclick="setArtSource('hero','gog',true)">GOG</button>
+              <button class="lang-btn" id="hero-sgdb" onclick="setArtSource('hero','sgdb',true)">SGDB</button>
+            </div>
+          </div>
+          <div class="srow" style="margin-bottom:16px">
+            <label data-i18n="set.logoSource">Logo</label>
+            <div class="lang-toggle">
+              <button class="lang-btn" id="logo-gog"  onclick="setArtSource('logo','gog',true)">GOG</button>
+              <button class="lang-btn" id="logo-sgdb" onclick="setArtSource('logo','sgdb',true)">SGDB</button>
+            </div>
+          </div>
+          <div class="sg-title" data-i18n="set.descWindow">Okno Opis</div>
+          <div class="srow"><label data-i18n="set.bg">Tło</label><input type="color" id="s-desc-bg"></div>
+          <div class="srow"><label data-i18n="set.text">Tekst</label><input type="color" id="s-desc-text"></div>
+          <div class="srow"><label data-i18n="set.accentBar">Akcent / paski</label><input type="color" id="s-accent"></div>
+          <div class="sg-title" style="margin-top:16px" data-i18n="set.fonts">Rozmiary czcionek (px)</div>
+          <div class="srow"><label data-i18n="set.fList">Lista gier</label><input type="number" id="s-fs-list" min="9" max="20"></div>
+          <div class="srow"><label data-i18n="set.fDesc">Opis</label><input type="number" id="s-fs-desc" min="10" max="22"></div>
+          <div class="srow"><label data-i18n="set.fProgress">Paski postępu</label><input type="number" id="s-fs-progress" min="9" max="18"></div>
+          <div class="srow"><label data-i18n="set.fMeta">Metadane / małe</label><input type="number" id="s-fs-meta" min="8" max="16"></div>
+          <div class="srow"><label data-i18n="set.height">Grubość paska postępu</label>
+            <input type="range" id="s-bar-h" min="4" max="20" step="1"
+                   oninput="document.getElementById('s-bar-hv').textContent=this.value+'px'">
+            <span class="val" id="s-bar-hv">8px</span></div>
+        </div>
+
+        <!-- DIRECTORIES -->
+        <div class="set-panel" data-panel="directories">
+          <h2 data-i18n="set.tab.directories">Katalogi</h2>
+          <div class="wiz-note" style="margin-bottom:10px" data-i18n="set.dirsNote">Metadane gier, cache GOG i sekrety są zawsze w katalogu programu (aplikacja przenośna). Poniżej wybierasz tylko gdzie pobierać instalatory i gdzie są zainstalowane gry.</div>
+          <div class="dir-row">
+            <div><div class="dir-label" data-i18n="wiz.dirs.install">GOGinstall (instalatory + extras)</div>
+              <div class="dir-val" id="dir-install">—</div></div>
+            <button class="btn" onclick="pickDir('install')" data-i18n="wiz.dirs.choose">Wybierz…</button>
+          </div>
+          <div class="dir-row">
+            <div><div class="dir-label" data-i18n="wiz.dirs.games">GOG Games (zainstalowane gry)</div>
+              <div class="dir-val" id="dir-games">—</div></div>
+            <button class="btn" onclick="pickDir('games')" data-i18n="wiz.dirs.choose">Wybierz…</button>
+          </div>
+          <button class="btn" style="margin-top:14px" onclick="rebuildIndex()" data-i18n="set.rebuild">↺ Przebuduj indeks</button>
+        </div>
+
+        <!-- DOWNLOADS -->
+        <div class="set-panel" data-panel="downloads">
+          <h2 data-i18n="set.tab.downloads">Pobieranie</h2>
+          <div class="srow"><label data-i18n="set.connections">Połączenia (pliki × segmenty)</label>
+            <input type="range" id="s-dl-threads" min="1" max="6" step="1"
+                   oninput="document.getElementById('s-dl-threadsv').textContent=this.value">
+            <span class="val" id="s-dl-threadsv">4</span></div>
+          <div class="srow"><label><span data-i18n="set.extrasSub">Extras do podkatalogu</span> <code>extras/</code></label>
+            <input type="checkbox" id="s-extras-sub" checked></div>
+          <div class="srow"><label data-i18n="set.updateLangs">Języki aktualizacji (installery)</label>
+            <input type="text" id="s-update-langs" placeholder="en, pl" style="min-width:120px"></div>
+          <div class="wiz-note" style="margin-top:6px" data-i18n="set.updateLangsNote">Kody języków oddzielone przecinkami (np. <code>en, pl</code>). Updater bierze pod uwagę tylko installery Windows w tych językach; stare wersje w extras są pomijane.</div>
+        </div>
+
+        <!-- ACCOUNT -->
+        <div class="set-panel" data-panel="account">
+          <h2 data-i18n="set.tab.account">Konto GOG</h2>
+          <div class="wiz-big-status" id="gogStatusBig"><span id="gogStatus" data-i18n="set.checking">Sprawdzanie…</span></div>
+          <button class="btn primary" id="gogLoginBtn" onclick="openGogLogin()" data-i18n="set.login">Zaloguj</button>
+        </div>
+
+        <!-- ADVANCED -->
+        <div class="set-panel" data-panel="advanced">
+          <h2 data-i18n="set.tab.advanced">Zaawansowane</h2>
+          <button class="btn" onclick="resetSettings()" data-i18n="set.reset">Przywróć domyślne (wygląd)</button>
+        </div>
+
+        <div class="set-footer">
+          <button class="btn primary" onclick="saveSettingsFromForm()" data-i18n="set.save">Zapisz</button>
+          <button class="btn"         onclick="applySettingsFromForm()" data-i18n="set.preview">Podgląd</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- download selection modal (hidden) -->
+  <div class="settings-overlay" id="downloadModal" style="display:none">
+    <div class="settings-box dl-box">
+      <div class="dl-head">
+        <div>
+          <div class="dl-kicker" id="dlKicker" data-i18n="dl.titleDownload">Pobierz</div>
+          <h3 id="dlTitle">—</h3>
+          <div class="dl-subtitle" id="dlSubtitle" data-i18n="dl.subtitle">Wybierz co pobrać — grupy z presetem „Zalecane"</div>
+        </div>
+        <button class="icon-btn" onclick="closeDownloadModal()" title="Esc">✕</button>
+      </div>
+      <div class="dl-presets">
+        <span class="dl-presets-label" data-i18n="dl.preset">Preset</span>
+        <button class="btn btn-xs" id="dlRecommended" onclick="applyRecommended()" data-i18n="dl.recommended">✨ Zalecane</button>
+        <button class="btn btn-xs" onclick="selectAllRows(true)"  data-i18n="dl.all">Wszystko</button>
+        <button class="btn btn-xs" onclick="selectAllRows(false)" data-i18n="dl.clear">Wyczyść</button>
+      </div>
+      <div id="dlBody"><div class="dl-empty" data-i18n="dl.loading">Wczytywanie…</div></div>
+      <div class="dl-foot">
+        <div class="dl-sum"><span data-i18n="dl.selected">Zaznaczono</span>: <b id="dlSum">0 B</b> <span id="dlCount"></span></div>
+        <div style="display:flex; gap:8px">
+          <button class="btn primary" id="dlGo">⬇ Pobierz zaznaczone</button>
+          <button class="btn" onclick="closeDownloadModal()" data-i18n="dl.cancel">✕ Anuluj</button>
+        </div>
+      </div>
+    </div>
+  </div>
+  <!-- GOG login modal (hidden) -->
+  <div class="settings-overlay" id="gogModal" style="display:none">
+    <div class="settings-box" style="width:480px">
+      <h3>Logowanie do GOG</h3>
+      <p style="font-size:12px; color:var(--muted); line-height:1.5; margin:0 0 12px">
+        1. Otwarto stronę logowania GOG w przeglądarce (jeśli nie — użyj przycisku niżej).<br>
+        2. Zaloguj się. Po sukcesie przeglądarka pokaże pustą stronę
+        <code>on_login_success</code>.<br>
+        3. Skopiuj <b>cały adres URL</b> z paska przeglądarki i wklej poniżej.
+      </p>
+      <div class="srow" style="margin-bottom:10px">
+        <button class="btn" onclick="reopenGogUrl()">↗ Otwórz stronę logowania ponownie</button>
+      </div>
+      <input type="text" id="gogPaste" placeholder="Wklej adres on_login_success lub sam kod…"
+             style="width:100%; box-sizing:border-box; padding:8px 10px; border-radius:8px;
+                    border:1px solid var(--line); background:var(--panel); color:inherit; font-size:12px">
+      <div id="gogMsg" style="font-size:12px; color:var(--muted); margin-top:8px; min-height:16px"></div>
+      <div class="settings-actions" style="margin-top:14px">
+        <button class="btn primary" id="gogFinishBtn" onclick="finishGogLogin()">Zaloguj</button>
+        <button class="btn" onclick="closeGogLogin()">✕ Anuluj</button>
+      </div>
+    </div>
+  </div>
+  <!-- screenshot lightbox (hidden) -->
+  <div class="lightbox" id="lightbox" style="display:none" onclick="closeLightbox()">
+    <img id="lightboxImg" src="" alt="">
+  </div>
+
+  <!-- command palette (Ctrl+K) -->
+  <div class="palette-overlay" id="palette" style="display:none" onclick="if(event.target===this)closePalette()">
+    <div class="palette-box">
+      <div class="palette-search">
+        <span class="tb-mag">🔍</span>
+        <input id="paletteInput" data-i18n-ph="palette.ph" placeholder="Szukaj gry lub akcji…" autocomplete="off">
+        <span class="tb-kbd">Esc</span>
+      </div>
+      <div class="palette-results" id="paletteResults"></div>
+    </div>
+  </div>
+
+  <!-- toast stack -->
+  <div id="toasts"></div>
+
+  <!-- SGDB art override (fix wrong auto-matches) -->
+  <div class="settings-overlay" id="sgdbOverrideModal" style="display:none">
+    <div class="settings-box art-picker">
+      <div class="dl-head">
+        <div>
+          <div class="dl-kicker" data-i18n="ovr.kicker">Grafika gry</div>
+          <h3 id="ovrGameTitle">—</h3>
+          <div class="dl-subtitle" data-i18n="ovr.subtitle">Wybierz konkretne hero i logo, albo zostaw „Auto" (z ustawień). Wybór zapisuje się per gra.</div>
+        </div>
+        <button class="icon-btn" onclick="closeSgdbOverride()" title="Esc">✕</button>
+      </div>
+
+      <div class="ovr-sgdbid">
+        <span class="small" data-i18n="ovr.sgdbId">Dopasowanie SGDB:</span>
+        <input id="sgdbOverrideInput" placeholder="SGDB ID / URL"
+               style="flex:1;min-width:0;background:var(--panel2);border:1px solid var(--line);border-radius:7px;padding:6px 9px;color:var(--text);font-family:inherit;font-size:12px">
+        <button class="btn btn-xs" onclick="applySgdbOverride()" data-i18n="ovr.apply">Zastosuj</button>
+        <a id="ovrSearchLink" href="#" target="_blank" class="small" style="color:var(--accent);text-decoration:none;white-space:nowrap" data-i18n="ovr.search">🔎 SGDB</a>
+      </div>
+
+      <div class="ovr-section">
+        <div class="ovr-section-head">
+          <span data-i18n="ovr.hero">Tło (hero)</span>
+          <button class="btn btn-xs" onclick="pickAuto('hero')" data-i18n="ovr.auto">↺ Auto (z ustawień)</button>
+        </div>
+        <div class="ovr-gallery" id="ovrHeroes"><div class="dl-empty small" data-i18n="ovr.loading">Wczytywanie…</div></div>
+      </div>
+
+      <div class="ovr-section">
+        <div class="ovr-section-head">
+          <span data-i18n="ovr.logo">Logo</span>
+          <button class="btn btn-xs" onclick="pickAuto('logo')" data-i18n="ovr.auto">↺ Auto (z ustawień)</button>
+        </div>
+        <div class="ovr-gallery" id="ovrLogos"><div class="dl-empty small" data-i18n="ovr.loading">Wczytywanie…</div></div>
+      </div>
+
+      <div class="wiz-note" id="ovrMsg" style="margin:4px 0 0"></div>
+    </div>
+  </div>
+
+  <!-- SGDB art override end -->
+
+<script>
+/* ════════════════════════════════════════
+   STATE
+════════════════════════════════════════ */
+let games = [], sel = null, cfg = {};
+let isRunning = false, _afterCmd = null;
+
+/* ════════════════════════════════════════
+   I18N  (PL / EN)
+════════════════════════════════════════ */
+let LANG = 'pl';
+const I18N = {
+  pl: {
+    'app.title':'GOG Library','sidebar.loading':'Ładowanie…',
+    'tb.subtitle':'Zarządzaj swoją biblioteką GOG lokalnie','tb.searchPh':'Szukaj w bibliotece…',
+    'tb.sync':'Synchronizuj bibliotekę','tb.updateAll':'Aktualizuj wszystko','tb.log':'Dziennik','tb.settings':'Ustawienia',
+    'tb.notLoggedIn':'Nie zalogowano','tb.loggedIn':'Zalogowano',
+    'filter.all':'Wszystkie','filter.installed':'Zainstalowane','filter.downloaded':'Pobrane',
+    'sort.title':'Alfabetycznie','sort.size':'Rozmiar','sort.year':'Rok wydania','sort.status':'Status',
+    'sb.idle':'Bezczynny','sb.busy':'Zajęty','sb.noTasks':'Brak aktywnych zadań. Rozpocznij pobieranie z widoku gry.',
+    'sb.details':'Szczegóły','sb.games':'{n} gier w bibliotece',
+    'palette.ph':'Szukaj gry lub akcji…','palette.games':'Gry','palette.actions':'Akcje','palette.noResults':'Brak wyników',
+    'pa.sync':'Synchronizuj bibliotekę','pa.settings':'Otwórz ustawienia','pa.log':'Pokaż dziennik','pa.lang':'Przełącz język',
+    'set.tab.directories':'Katalogi','set.tab.advanced':'Zaawansowane','set.theme':'Motyw',
+    'set.rebuild':'↺ Przebuduj indeks','set.close2':'Zamknij','set.dirSaved':'Zapisano katalog','set.saved':'Ustawienia zapisane',
+    'set.sgdb':'SteamGridDB (grafika hero + logo)','set.sgdbHint':'Lepsze tła i logo niż z GOG. Klucz API zdobędziesz na steamgriddb.com/profile/preferences/api.','set.test':'Testuj','set.sgdbOk':'Klucz działa','set.sgdbFail':'Klucz odrzucony','set.sgdbNoKey':'Wpisz klucz','set.artFromSgdb':'Grafika z SteamGridDB','set.heroSource':'Tło (hero)','set.logoSource':'Logo','set.sgdbSet':'(ustawiony — wpisz nowy, aby zmienić)','sec.prefix':'Ochrona sekretów','sec.tpm':'(sprzętowo, powiązane z tym komputerem)','sec.dpapi':'(konto + komputer)','sec.xor':'obfuskacja (brak TPM/DPAPI — tylko poza Windows)','ovr.title':'Popraw grafikę (SteamGridDB)','ovr.kicker':'Grafika gry','ovr.subtitle':'Wybierz konkretne hero i logo, albo zostaw „Auto" (z ustawień). Wybór zapisuje się per gra.','ovr.sgdbId':'Dopasowanie SGDB:','ovr.hero':'Tło (hero)','ovr.logo':'Logo','ovr.auto':'↺ Auto (z ustawień)','ovr.autoDone':'Przywrócono auto (z ustawień)','ovr.loading':'Wczytywanie…','ovr.none':'Brak grafik z tego źródła','ovr.hint':'SGDB czasem dopasowuje grafikę do innej (np. nowszej) wersji gry. Wklej ID gry z SteamGridDB lub adres, np. steamgriddb.com/game/5254, aby wymusić właściwą.','ovr.search':'🔎 Szukaj tej gry na SteamGridDB','ovr.apply':'Zastosuj','ovr.clear':'Wyczyść (auto)','ovr.close':'Zamknij','ovr.enter':'Wpisz ID lub URL','ovr.applying':'Ustawianie…','ovr.done':'Ustawiono SGDB','ovr.cleared':'Przywrócono auto-dopasowanie','ovr.fail':'Nie udało się','set.dirsNote':'Metadane gier, cache GOG i sekrety są zawsze w katalogu programu (aplikacja przenośna). Poniżej wybierasz tylko gdzie pobierać instalatory i gdzie są zainstalowane gry.',
+    'dl.preset':'Preset','dl.all':'Wszystko','dl.clear':'Wyczyść','dl.subtitle':'Wybierz co pobrać — grupy z presetem „Zalecane"',
+    'toast.launch':'Uruchamianie gry…','toast.installer':'Uruchomiono instalator',
+    'sidebar.syncAll':'⬇ Pobierz JSON dla wszystkich','sidebar.pickJson':'📁 Katalog JSON',
+    'sidebar.pickInstall':'📂 GOGinstall','sidebar.pickGames':'🎮 GOG Games',
+    'sidebar.rebuild':'↺ Odśwież','sidebar.settings':'⚙ Ustawienia','sidebar.searchPh':'Szukaj gry…',
+    'cfg.json':'JSON','cfg.install':'Install','cfg.games':'GOG Games',
+    'cfg.installed':'zainst.','cfg.downloaded':'pobrane','cfg.none':'brak',
+    'act.title':'Pobieranie','act.idle':'gotowy','act.running':'działanie…','act.finished':'zakończono',
+    'act.errCode':'błąd (kod {rc})','act.err':'błąd','act.stop':'■ Stop','act.clear':'Wyczyść',
+    'act.done':'Pobrane pliki','act.completed':'✓ Zakończono','act.remaining':'Pozostało',
+    'act.eta':'ETA','act.speedNa':'—',
+    'status.installed':'✓ Zainstalowana','status.downloaded':'⬇ Pobrano','status.notDownloaded':'Nie pobrana',
+    'btn.launch':'▶ Uruchom','btn.runInstaller':'▶ Uruchom instalator','btn.deleteInstaller':'🗑 Usuń installer','btn.deleteGame':'🗑 Usuń grę',
+    'btn.openInstaller':'📂 Folder instalatora','btn.openGame':'📂 Folder gry',
+    'btn.reDownload':'↻ Pobierz ponownie','btn.download':'⬇ Pobierz installer',
+    'btn.update':'⟳ Aktualizuj installery','btn.depotInstall':'⚡ Instaluj (depot)','btn.syncGame':'↻ JSON tej gry',
+    'detail.description':'Opis','detail.noDescription':'Brak opisu.',
+    'detail.screenshots':'Screenshoty','detail.noScreenshots':'Brak screenshotów.',
+    'detail.metadata':'Metadane','detail.releaseDate':'Data wydania','detail.installable':'Instalacja',
+    'detail.yes':'✓ Tak','detail.no':'✗ Nie','detail.languages':'Języki','detail.platforms':'Platformy',
+    'detail.forum':'Forum','detail.support':'Support','detail.open':'otwórz →',
+    'detail.installerFiles':'Pliki instalatora','detail.noData':'Brak danych. Pobierz JSON lub wybierz katalog.',
+    'detail.extras':'Dodatki (extras)','detail.extrasLoading':'Wczytywanie…','detail.extrasNone':'Brak dodatków dla tej gry.',
+    'detail.init':'Inicjalizacja…',
+    'set.title':'⚙ Ustawienia','set.tab.appearance':'Wygląd','set.tab.downloads':'Pobieranie',
+    'set.tab.account':'Konto','set.descWindow':'Okno Opis','set.bg':'Tło','set.text':'Tekst',
+    'set.accent':'Kolor akcentu','set.accentBar':'Akcent / paski','set.fonts':'Rozmiary czcionek (px)',
+    'set.fList':'Lista gier','set.fDesc':'Opis','set.fProgress':'Paski postępu','set.fMeta':'Metadane / małe',
+    'set.barThick':'Grubość paska postępu','set.height':'Wysokość','set.download':'Pobieranie',
+    'set.connections':'Połączenia (pliki × segmenty)','set.extrasSub':'Extras do podkatalogu',
+    'set.updateLangs':'Języki aktualizacji (installery)','set.updateLangsNote':'Kody języków oddzielone przecinkami (np. <code>en, pl</code>). Updater bierze pod uwagę tylko installery Windows w tych językach; stare wersje w extras są pomijane.',
+    'set.language':'Język / Language','set.account':'Konto GOG','set.checking':'Sprawdzanie…',
+    'set.login':'Zaloguj','set.reLogin':'Zaloguj ponownie','set.loggedIn':'✓ Zalogowano',
+    'set.notLoggedIn':'Niezalogowano','set.save':'Zapisz','set.preview':'Podgląd',
+    'set.reset':'Domyślne','set.close':'✕',
+    'dl.titleDownload':'Pobierz','dl.titleInstall':'⚡ Instaluj (depot)','dl.loading':'Wczytywanie listy plików z GOG…',
+    'dl.goDownload':'⬇ Pobierz zaznaczone','dl.goInstall':'⚡ Instaluj','dl.cancel':'✕ Anuluj',
+    'dl.selected':'Zaznaczono','dl.items':'({n} poz.)','dl.recommended':'✨ Zalecane','dl.selectAll':'Zaznacz wszystko',
+    'dl.installNote':'Gra zostanie zainstalowana bezpośrednio z depotów Galaxy (bez pobierania instalatora). Poniżej możesz opcjonalnie zaznaczyć dodatki do pobrania.',
+    'dl.empty':'Brak plików do pobrania dla tej gry.','dl.emptyInstall':'Brak dodatków — gra zostanie zainstalowana bez extras.',
+    'dl.loadError':'Nie udało się pobrać listy plików.',
+    'dl.sec.installers':'Instalatory','dl.sec.patches':'Łatki','dl.sec.language_packs':'Pakiety językowe',
+    'dl.sec.dlcs':'DLC','dl.sec.extras':'Extras',
+    'dl.badge.notOwned':'brak w bibliotece','dl.badge.old':'stara wersja?','dl.badge.pack':'paczka',
+    'wiz.step':'Krok {n} z {total}','wiz.skip':'Pomiń konfigurację','wiz.back':'← Wstecz','wiz.next':'Dalej →',
+    'wiz.finish':'Zakończ','wiz.welcome.title':'Witaj w GOG Library','wiz.welcome.sub':'Skonfigurujmy managera w trzech krokach.',
+    'wiz.dirs.title':'1 · Katalogi','wiz.dirs.sub':'Wskaż, gdzie trzymać metadane, instalatory i zainstalowane gry.',
+    'wiz.dirs.json':'Katalog JSON (metadane gier)','wiz.dirs.install':'GOGinstall (instalatory + extras)',
+    'wiz.dirs.games':'GOG Games (zainstalowane gry)','wiz.dirs.choose':'Wybierz…','wiz.dirs.notset':'nie ustawiono',
+    'wiz.login.title':'2 · Logowanie GOG','wiz.login.sub':'Zaloguj się, aby pobierać instalatory i instalować z depotów.',
+    'wiz.login.status.in':'✓ Zalogowano do GOG','wiz.login.status.out':'Niezalogowano',
+    'wiz.login.btn':'Zaloguj do GOG','wiz.login.skip':'Mogę zalogować się później w Ustawieniach.',
+    'wiz.sync.title':'3 · Synchronizacja','wiz.sync.sub':'Pobierz metadane swojej biblioteki GOG.',
+    'wiz.sync.btn':'⬇ Pobierz bibliotekę','wiz.sync.later':'Zrobię to później',
+    'wiz.sync.running':'Pobieranie metadanych…','wiz.sync.done':'✓ Gotowe — załadowano bibliotekę.',
+    'boot.noGames':'Brak gier. Kliknij <b>⬇ Pobierz JSON</b> lub zmień katalog JSON.',
+    'boot.loaded':'Załadowano {n} gier — {inst} zainstalowanych, {dl} z pobranym installerem.',
+    'boot.initError':'Błąd inicjalizacji:',
+  },
+  en: {
+    'app.title':'GOG Library','sidebar.loading':'Loading…',
+    'tb.subtitle':'Manage your GOG library locally','tb.searchPh':'Search the library…',
+    'tb.sync':'Sync library','tb.updateAll':'Update all','tb.log':'Log','tb.settings':'Settings',
+    'tb.notLoggedIn':'Not logged in','tb.loggedIn':'Logged in',
+    'filter.all':'All','filter.installed':'Installed','filter.downloaded':'Downloaded',
+    'sort.title':'Alphabetical','sort.size':'Size','sort.year':'Release year','sort.status':'Status',
+    'sb.idle':'Idle','sb.busy':'Busy','sb.noTasks':'No active tasks. Start a download from the game view.',
+    'sb.details':'Details','sb.games':'{n} games in library',
+    'palette.ph':'Search game or action…','palette.games':'Games','palette.actions':'Actions','palette.noResults':'No results',
+    'pa.sync':'Sync library','pa.settings':'Open settings','pa.log':'Show log','pa.lang':'Toggle language',
+    'set.tab.directories':'Directories','set.tab.advanced':'Advanced','set.theme':'Theme',
+    'set.rebuild':'↺ Rebuild index','set.close2':'Close','set.dirSaved':'Directory saved','set.saved':'Settings saved',
+    'set.sgdb':'SteamGridDB (hero + logo art)','set.sgdbHint':'Better backgrounds and logos than GOG. Get an API key at steamgriddb.com/profile/preferences/api.','set.test':'Test','set.sgdbOk':'Key works','set.sgdbFail':'Key rejected','set.sgdbNoKey':'Enter a key','set.artFromSgdb':'Art from SteamGridDB','set.heroSource':'Background (hero)','set.logoSource':'Logo','set.sgdbSet':'(set — type a new one to change)','sec.prefix':'Secret protection','sec.tpm':'(hardware-bound to this PC)','sec.dpapi':'(account + machine bound)','sec.xor':'obfuscation (no TPM/DPAPI — non-Windows only)','ovr.title':'Fix artwork (SteamGridDB)','ovr.kicker':'Game artwork','ovr.subtitle':'Pick a specific hero and logo, or leave it on „Auto" (from Settings). Choices are saved per game.','ovr.sgdbId':'SGDB match:','ovr.hero':'Background (hero)','ovr.logo':'Logo','ovr.auto':'↺ Auto (from Settings)','ovr.autoDone':'Reverted to auto (from Settings)','ovr.loading':'Loading…','ovr.none':'No art from this source','ovr.hint':'SGDB sometimes matches art to a different (e.g. newer) version of the game. Paste the SteamGridDB game id or URL, e.g. steamgriddb.com/game/5254, to force the right one.','ovr.search':'🔎 Search this game on SteamGridDB','ovr.apply':'Apply','ovr.clear':'Clear (auto)','ovr.close':'Close','ovr.enter':'Enter an id or URL','ovr.applying':'Applying…','ovr.done':'Pinned SGDB','ovr.cleared':'Restored auto-match','ovr.fail':'Failed','set.dirsNote':'Game metadata, GOG cache and secrets always live in the program folder (portable app). Below you only choose where to download installers and where games are installed.',
+    'dl.preset':'Preset','dl.all':'All','dl.clear':'Clear','dl.subtitle':'Choose what to download — groups with a "Recommended" preset',
+    'toast.launch':'Launching game…','toast.installer':'Installer launched',
+    'sidebar.syncAll':'⬇ Fetch JSON for all','sidebar.pickJson':'📁 JSON folder',
+    'sidebar.pickInstall':'📂 GOGinstall','sidebar.pickGames':'🎮 GOG Games',
+    'sidebar.rebuild':'↺ Refresh','sidebar.settings':'⚙ Settings','sidebar.searchPh':'Search games…',
+    'cfg.json':'JSON','cfg.install':'Install','cfg.games':'GOG Games',
+    'cfg.installed':'installed','cfg.downloaded':'downloaded','cfg.none':'missing',
+    'act.title':'Activity','act.idle':'ready','act.running':'working…','act.finished':'done',
+    'act.errCode':'error (code {rc})','act.err':'error','act.stop':'■ Stop','act.clear':'Clear',
+    'act.done':'Completed files','act.completed':'✓ Done','act.remaining':'Remaining',
+    'act.eta':'ETA','act.speedNa':'—',
+    'status.installed':'✓ Installed','status.downloaded':'⬇ Downloaded','status.notDownloaded':'Not downloaded',
+    'btn.launch':'▶ Launch','btn.runInstaller':'▶ Run installer','btn.deleteInstaller':'🗑 Delete installer','btn.deleteGame':'🗑 Delete game',
+    'btn.openInstaller':'📂 Installer folder','btn.openGame':'📂 Game folder',
+    'btn.reDownload':'↻ Re-download','btn.download':'⬇ Download installer',
+    'btn.update':'⟳ Update installers','btn.depotInstall':'⚡ Install (depot)','btn.syncGame':'↻ Sync this game',
+    'detail.description':'Description','detail.noDescription':'No description.',
+    'detail.screenshots':'Screenshots','detail.noScreenshots':'No screenshots.',
+    'detail.metadata':'Metadata','detail.releaseDate':'Release date','detail.installable':'Installable',
+    'detail.yes':'✓ Yes','detail.no':'✗ No','detail.languages':'Languages','detail.platforms':'Platforms',
+    'detail.forum':'Forum','detail.support':'Support','detail.open':'open →',
+    'detail.installerFiles':'Installer files','detail.noData':'No data. Fetch JSON or pick a folder.',
+    'detail.extras':'Extras','detail.extrasLoading':'Loading…','detail.extrasNone':'No extras for this game.',
+    'detail.init':'Initializing…',
+    'set.title':'⚙ Settings','set.tab.appearance':'Appearance','set.tab.downloads':'Downloads',
+    'set.tab.account':'Account','set.descWindow':'Description panel','set.bg':'Background','set.text':'Text',
+    'set.accent':'Accent color','set.accentBar':'Accent / bars','set.fonts':'Font sizes (px)',
+    'set.fList':'Game list','set.fDesc':'Description','set.fProgress':'Progress bars','set.fMeta':'Metadata / small',
+    'set.barThick':'Progress bar thickness','set.height':'Height','set.download':'Downloads',
+    'set.connections':'Connections (files × segments)','set.extrasSub':'Extras into subfolder',
+    'set.updateLangs':'Update languages (installers)','set.updateLangsNote':'Comma-separated language codes (e.g. <code>en, pl</code>). The updater only considers Windows installers in these languages; old versions parked in extras are skipped.',
+    'set.language':'Język / Language','set.account':'GOG account','set.checking':'Checking…',
+    'set.login':'Log in','set.reLogin':'Log in again','set.loggedIn':'✓ Logged in',
+    'set.notLoggedIn':'Not logged in','set.save':'Save','set.preview':'Preview',
+    'set.reset':'Defaults','set.close':'✕',
+    'dl.titleDownload':'Download','dl.titleInstall':'⚡ Install (depot)','dl.loading':'Loading file list from GOG…',
+    'dl.goDownload':'⬇ Download selected','dl.goInstall':'⚡ Install','dl.cancel':'✕ Cancel',
+    'dl.selected':'Selected','dl.items':'({n} items)','dl.recommended':'✨ Recommended','dl.selectAll':'Select all',
+    'dl.installNote':'The game will be installed straight from Galaxy depots (no installer download). Optionally pick extras to download below.',
+    'dl.empty':'No files to download for this game.','dl.emptyInstall':'No extras — the game will install without extras.',
+    'dl.loadError':'Could not load the file list.',
+    'dl.sec.installers':'Installers','dl.sec.patches':'Patches','dl.sec.language_packs':'Language packs',
+    'dl.sec.dlcs':'DLC','dl.sec.extras':'Extras',
+    'dl.badge.notOwned':'not in library','dl.badge.old':'old version?','dl.badge.pack':'pack',
+    'wiz.step':'Step {n} of {total}','wiz.skip':'Skip setup','wiz.back':'← Back','wiz.next':'Next →',
+    'wiz.finish':'Finish','wiz.welcome.title':'Welcome to GOG Library','wiz.welcome.sub':"Let's set up the manager in three steps.",
+    'wiz.dirs.title':'1 · Directories','wiz.dirs.sub':'Choose where to keep metadata, installers and installed games.',
+    'wiz.dirs.json':'JSON folder (game metadata)','wiz.dirs.install':'GOGinstall (installers + extras)',
+    'wiz.dirs.games':'GOG Games (installed games)','wiz.dirs.choose':'Choose…','wiz.dirs.notset':'not set',
+    'wiz.login.title':'2 · GOG login','wiz.login.sub':'Log in to download installers and install from depots.',
+    'wiz.login.status.in':'✓ Logged in to GOG','wiz.login.status.out':'Not logged in',
+    'wiz.login.btn':'Log in to GOG','wiz.login.skip':'I can log in later from Settings.',
+    'wiz.sync.title':'3 · Sync','wiz.sync.sub':'Fetch the metadata of your GOG library.',
+    'wiz.sync.btn':'⬇ Fetch library','wiz.sync.later':"I'll do it later",
+    'wiz.sync.running':'Fetching metadata…','wiz.sync.done':'✓ Done — library loaded.',
+    'boot.noGames':'No games. Click <b>⬇ Fetch JSON</b> or change the JSON folder.',
+    'boot.loaded':'Loaded {n} games — {inst} installed, {dl} with a downloaded installer.',
+    'boot.initError':'Initialization error:',
+  },
+};
+
+function t(key, vars) {
+  let s = (I18N[LANG] && I18N[LANG][key]) || (I18N.pl[key]) || key;
+  if (vars) for (const k in vars) s = s.replace(new RegExp('{' + k + '}', 'g'), vars[k]);
+  return s;
+}
+
+/* Walk the DOM and fill every [data-i18n] / [data-i18n-ph] / [data-i18n-html]. */
+function applyI18n(root) {
+  (root || document).querySelectorAll('[data-i18n]').forEach(el => {
+    el.textContent = t(el.getAttribute('data-i18n'));
+  });
+  (root || document).querySelectorAll('[data-i18n-ph]').forEach(el => {
+    el.placeholder = t(el.getAttribute('data-i18n-ph'));
+  });
+  (root || document).querySelectorAll('[data-i18n-html]').forEach(el => {
+    el.innerHTML = t(el.getAttribute('data-i18n-html'));
+  });
+  document.documentElement.lang = LANG;
+}
+
+async function setLang(lang, persist) {
+  LANG = (lang === 'en') ? 'en' : 'pl';
+  applyI18n();
+  if (typeof renderMain === 'function' && games.length) renderMain();
+  if (typeof updateCfg === 'function') updateCfg();
+  if (persist) {
+    try { const s = await call('get_settings'); s.lang = LANG; await call('save_settings', s); }
+    catch (e) { console.warn('lang persist', e); }
+  }
+}
+
+/* ════════════════════════════════════════
+   UTILS
+════════════════════════════════════════ */
+const esc = s => String(s||'').replace(/[&<>"]/g,
+  m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[m]));
+
+const toUrl = u => (u && u.startsWith('//')) ? 'https:'+u : (u||'');
+
+const shotUrl = s => toUrl(
+  s?.formatted_images?.find(x => x.formatter_name === 'ggvgm')?.image_url ||
+  s?.formatted_images?.[0]?.image_url || ''
+);
+
+// Full-size variant for the lightbox. GOG screenshot URLs end with a
+// _<formatter> suffix (e.g. ..._ggvgm.jpg); stripping it yields the original.
+const shotUrlBig = s => {
+  const base = shotUrl(s);
+  if (!base) return '';
+  const stripped = base.replace(/_[a-z0-9]{2,}(\.(?:jpg|jpeg|png|webp))(\?.*)?$/i, '$1$2');
+  return stripped || base;
+};
+
+function formatSize(bytes) {
+  if (!bytes) return '';
+  if (bytes >= 1e9) return (bytes / 1e9).toFixed(1) + ' GB';
+  if (bytes >= 1e6) return (bytes / 1e6).toFixed(0) + ' MB';
+  return Math.round(bytes / 1e3) + ' KB';
+}
+
+async function call(name, ...args) {
+  return await window.pywebview.api[name](...args);
+}
+
+/* ════════════════════════════════════════
+   ACTIVITY PANEL
+════════════════════════════════════════ */
+let hasProgress    = false;
+
+window.handleActivity = function(msg) {
+  if (msg.type === 'progress') {
+    if (!hasProgress) {
+      hasProgress = true;
+      togglePanel(true);
+    }
+    renderProgress(msg.slots || [], msg.total || {});
+  } else if (msg.type === 'completion') {
+    addCompletion(msg.filename || '', msg.speed || '');
+  } else if (msg.type === 'log') {
+    if (msg.text) addLogLine(msg.text);
+  }
+};
+
+function ensurePanelOpen() { togglePanel(true); }
+
+function addLogLine(text) {
+  const list = document.getElementById('doneList');
+  if (!list) return;
+  ensurePanelOpen();
+  const item = document.createElement('div');
+  item.className = 'done-item log';
+  item.innerHTML = '<div class="ci-name" style="opacity:.7">' + esc(text) + '</div>';
+  list.insertBefore(item, list.firstChild);
+}
+
+function renderProgress(slots, total) {
+  const container = document.getElementById('slotsContainer');
+  const totalEl   = document.getElementById('totalStats');
+  if (!container) return;
+
+  container.innerHTML = slots.map(s => {
+    const pct  = s.finished ? 100 : Math.max(0, Math.min(100, s.pct || 0));
+    const left = s.finished
+      ? (esc(s.total || '') + ' ' + esc(s.unit || '')).trim()
+      : esc(s.transferred || '0') + ' / ' + esc(s.total || '?') + ' ' + esc(s.unit || '');
+    const right = s.finished
+      ? t('act.completed')
+      : esc(s.speed || '0') + ' ' + esc(s.speed_unit || '') + ' · ' + t('act.eta') + ' ' + esc(s.eta || '?');
+    return '<div class="slot' + (s.finished ? ' done' : '') + '">'
+      + '<div class="slot-header">'
+        + '<span class="slot-num">#' + s.id + '</span>'
+        + '<span class="slot-name" title="' + esc(s.filename||'') + '">' + esc(s.filename || '—') + '</span>'
+        + '<span class="slot-pct">' + pct + '%</span>'
+      + '</div>'
+      + '<div class="track"><div class="fill" style="width:' + pct + '%"></div></div>'
+      + '<div class="slot-meta"><span>' + left + '</span><span>' + right + '</span></div>'
+    + '</div>';
+  }).join('');
+
+  // Mirror aggregate progress onto the slim bottom status bar.
+  const fill = document.getElementById('sbFill');
+  const pctEl = document.getElementById('sbMiniPct');
+  let tp = total.pct;
+  if (tp === undefined && slots.length)
+    tp = Math.round(slots.reduce((a, s) => a + (s.finished ? 100 : (s.pct || 0)), 0) / slots.length);
+  if (fill && tp !== undefined) fill.style.width = Math.max(0, Math.min(100, tp)) + '%';
+  if (pctEl && tp !== undefined) pctEl.textContent = Math.round(tp) + '%';
+
+  if (totalEl && (total.speed || total.remaining !== undefined)) {
+    let h = '<div class="total-row">'
+          + '<span>⬇ ' + esc(total.speed || t('act.speedNa')) + '</span>';
+    if (total.remaining !== undefined)
+      h += '<span>' + t('act.remaining') + ': ' + esc(total.remaining) + (total.size ? ' (' + esc(total.size) + ')' : '') + '</span>';
+    if (total.eta)
+      h += '<span>' + t('act.eta') + ': ' + esc(total.eta) + '</span>';
+    h += '</div>';
+    totalEl.innerHTML = h;
+  }
+}
+
+function addCompletion(filename, speed) {
+  const list = document.getElementById('doneList');
+  if (!list) return;
+  ensurePanelOpen();
+  const item = document.createElement('div');
+  item.className = 'done-item';
+  item.innerHTML =
+    '<div class="ci-name" title="' + esc(filename) + '">' + esc(filename) + '</div>'
+    + '<div class="ci-speed">@ ' + esc(speed) + '</div>';
+  list.insertBefore(item, list.firstChild);   // newest on top
+}
+
+window.appendTerminalLine = function() {};   // kept for compat – no-op now
+function clearTerminal() { clearActivity(); }
+
+function clearActivity() {
+  const sc = document.getElementById('slotsContainer');
+  if (sc) sc.innerHTML = '';
+  const ts = document.getElementById('totalStats');
+  if (ts) ts.innerHTML = '';
+  const dl = document.getElementById('doneList');
+  if (dl) dl.innerHTML = '';
+  hasProgress = false;
+}
+
+/* Bottom drawer: force=true opens, false closes, undefined toggles. */
+function togglePanel(force) {
+  const p = document.getElementById('actPanel');
+  if (!p) return;
+  const open = (force === undefined) ? !p.classList.contains('open') : !!force;
+  p.classList.toggle('open', open);
+  const cb = document.getElementById('collapseBtn');
+  if (cb) cb.textContent = '▼';
+}
+
+function _setStatusbar(running, msg) {
+  const sb = document.getElementById('statusbar');
+  const tag = document.getElementById('sbTag');
+  const m = document.getElementById('sbMsg');
+  const mini = document.getElementById('sbMini');
+  if (sb)  sb.classList.toggle('busy', running);
+  if (tag) tag.textContent = running ? t('sb.busy') : t('sb.idle');
+  if (m && msg) m.textContent = msg;
+  if (mini) mini.style.display = running ? 'flex' : 'none';
+  if (!running) { const f = document.getElementById('sbFill'); if (f) f.style.width = '0'; }
+}
+
+function setRunning(running, statusText) {
+  isRunning = running;
+  const dot    = document.getElementById('actDot');
+  const status = document.getElementById('actStatus');
+  const kill   = document.getElementById('killBtn');
+  if (dot)    dot.className = 'dot ' + (running ? 'running' : 'idle');
+  if (status) status.textContent = statusText || (running ? t('act.running') : t('act.idle'));
+  if (kill)   kill.style.display = running ? '' : 'none';
+  document.querySelectorAll('[data-cmd]').forEach(b => b.disabled = running);
+  ['downloadBtn','reDownloadBtn','syncBtn','deleteInstallerBtn','deleteGameBtn','openGameBtn','openInstallerBtn',
+   'launchBtn','runInstallerBtn','depotInstallBtn']
+    .forEach(id => { const b = document.getElementById(id); if (b) b.disabled = running; });
+  _setStatusbar(running, statusText || (running ? null : (games.length ? t('sb.games', {n: games.length}) : t('sb.noTasks'))));
+  if (running) togglePanel(true);
+}
+
+window.onCommandFinished = async function(result) {
+  const dot = document.getElementById('actDot');
+  if (result && result.ok === false) {
+    if (dot) dot.className = 'dot err';
+    setRunning(false, t('act.errCode', {rc: result.rc}));
+    toast(t('act.errCode', {rc: result.rc}), 'err');
+    _afterCmd = null;
+  } else {
+    if (dot) dot.className = 'dot ok';
+    setRunning(false, t('act.finished'));
+    toast(t('act.completed'), 'ok');
+    if (_afterCmd) {
+      try   { await _afterCmd(); }
+      catch (e) { console.error('afterCmd', e); }
+      _afterCmd = null;
+    }
+  }
+};
+
+async function runCmd(cmdFn, afterFn, label) {
+  if (isRunning) return;
+  clearActivity();
+  setRunning(true, label || 'działanie…');
+  _afterCmd = afterFn || null;
+  try {
+    const r = await cmdFn();
+    if (r && !r.ok && !r.started) {
+      console.warn('cmd error:', r.error);
+      setRunning(false, t('act.err'));
+      _afterCmd = null;
+    }
+  } catch(e) {
+    console.error('runCmd exception:', e);
+    setRunning(false, t('act.err'));
+    _afterCmd = null;
+  }
+}
+
+async function killCmd() {
+  await call('kill_command');
+}
+
+/* ══════════════════════════════════════
+   SETTINGS
+══════════════════════════════════════ */
+const DEFAULT_SETTINGS = {
+  '--desc-bg':     '#10161d',
+  '--desc-text':   '#b8c4cf',
+  '--accent':      '#4a9fe8',
+  '--fs-list':     '12px',
+  '--fs-desc':     '13px',
+  '--fs-progress': '13px',
+  '--fs-meta':     '11px',
+  '--bar-height':  '8px',
+  'download_threads': 4,
+  'extras_subdir': true,
+  'update_langs': ['en', 'pl'],
+  'theme': 'steam',
+};
+
+let currentTheme = 'steam';
+let artHeroSource = 'gog', artLogoSource = 'sgdb';
+
+async function setArtSource(which, src, persist) {
+  if (which === 'hero') artHeroSource = src; else artLogoSource = src;
+  document.getElementById('hero-gog')?.classList.toggle('active', artHeroSource === 'gog');
+  document.getElementById('hero-sgdb')?.classList.toggle('active', artHeroSource === 'sgdb');
+  document.getElementById('logo-gog')?.classList.toggle('active', artLogoSource === 'gog');
+  document.getElementById('logo-sgdb')?.classList.toggle('active', artLogoSource === 'sgdb');
+  if (persist) {
+    // Persist immediately (like the language toggle) and refresh art now, so the
+    // choice sticks across restarts and every game re-resolves on next view.
+    try {
+      const s = await call('get_settings');
+      s.art_hero_source = artHeroSource;
+      s.art_logo_source = artLogoSource;
+      await call('save_settings', s);
+      await call('clear_hero_cache');          // drop stale art for ALL games
+    } catch (e) { console.warn('art source persist', e); }
+    Object.keys(_heroArtCache).forEach(k => delete _heroArtCache[k]);
+    const cur = games.find(g => g.id === sel);
+    if (cur) loadHeroArt(cur);
+    const label = which === 'hero' ? t('set.heroSource') : t('set.logoSource');
+    toast(label + ': ' + (src === 'gog' ? 'GOG' : 'SteamGridDB'), 'ok');
+  }
+}
+
+function applySettings(s) {
+  const root = document.documentElement;
+  for (const [k, v] of Object.entries(s))
+    if (k.startsWith('--')) root.style.setProperty(k, v);
+  if (s.theme) { currentTheme = s.theme; root.setAttribute('data-theme', s.theme); }
+  // Keep the art-source state in sync with whatever we're applying (boot + preview),
+  // so hero fetching and its cache key always reflect the real setting.
+  if (s.art_hero_source) artHeroSource = s.art_hero_source;
+  if (s.art_logo_source) artLogoSource = s.art_logo_source;
+}
+
+function setTheme(theme) {
+  currentTheme = theme;
+  document.documentElement.setAttribute('data-theme', theme);
+  document.getElementById('theme-steam')?.classList.toggle('active', theme === 'steam');
+  document.getElementById('theme-amoled')?.classList.toggle('active', theme === 'amoled');
+}
+
+function settingsToForm(s) {
+  document.getElementById('s-desc-bg').value    = s['--desc-bg']     || '#10161d';
+  document.getElementById('s-desc-text').value  = s['--desc-text']   || '#b8c4cf';
+  document.getElementById('s-accent').value     = s['--accent']      || '#4a9fe8';
+  document.getElementById('s-fs-list').value    = parseInt(s['--fs-list']     || '12');
+  document.getElementById('s-fs-desc').value    = parseInt(s['--fs-desc']     || '13');
+  document.getElementById('s-fs-progress').value= parseInt(s['--fs-progress'] || '13');
+  document.getElementById('s-fs-meta').value    = parseInt(s['--fs-meta']     || '11');
+  const bh = parseInt(s['--bar-height'] || '8');
+  document.getElementById('s-bar-h').value      = bh;
+  document.getElementById('s-bar-hv').textContent = bh + 'px';
+  const dt = Math.max(1, Math.min(6, parseInt(s['download_threads'] || '4')));
+  document.getElementById('s-dl-threads').value = dt;
+  document.getElementById('s-dl-threadsv').textContent = dt;
+  document.getElementById('s-extras-sub').checked = (s['extras_subdir'] !== false);
+  const ul = document.getElementById('s-update-langs');
+  if (ul) ul.value = (Array.isArray(s['update_langs']) ? s['update_langs'] : ['en','pl']).join(', ');
+  const sk = document.getElementById('s-sgdb-key');
+  if (sk) {
+    sk.value = '';
+    sk.placeholder = s['sgdb_key_set']
+      ? '•••••••• ' + t('set.sgdbSet')
+      : 'SGDB API key';
+  }
+  setArtSource('hero', s['art_hero_source'] || 'gog');
+  setArtSource('logo', s['art_logo_source'] || 'sgdb');
+  setTheme(s['theme'] || 'steam');
+}
+
+function settingsFromForm() {
+  const n = id => document.getElementById(id).value;
+  return {
+    '--desc-bg':     n('s-desc-bg'),
+    '--desc-text':   n('s-desc-text'),
+    '--accent':      n('s-accent'),
+    '--fs-list':     n('s-fs-list')     + 'px',
+    '--fs-desc':     n('s-fs-desc')     + 'px',
+    '--fs-progress': n('s-fs-progress') + 'px',
+    '--fs-meta':     n('s-fs-meta')     + 'px',
+    '--bar-height':  n('s-bar-h')       + 'px',
+    'download_threads': parseInt(n('s-dl-threads')) || 4,
+    'extras_subdir': document.getElementById('s-extras-sub').checked,
+    'update_langs': (n('s-update-langs') || 'en, pl').split(',').map(x => x.trim().toLowerCase()).filter(Boolean),
+    'sgdb_key': (document.getElementById('s-sgdb-key')?.value || '').trim(),
+    'art_hero_source': artHeroSource,
+    'art_logo_source': artLogoSource,
+    'theme': currentTheme,
+  };
+}
+
+function setSettingsTab(tab) {
+  document.querySelectorAll('.set-tab').forEach(b =>
+    b.classList.toggle('active', b.getAttribute('data-tab') === tab));
+  document.querySelectorAll('.set-panel').forEach(p =>
+    p.classList.toggle('active', p.getAttribute('data-panel') === tab));
+}
+
+async function openSettings(tab) {
+  const s = await call('get_settings');
+  settingsToForm(s);
+  syncLangButtons();
+  // Reflect current directories in the panel.
+  const setDir = (id, v) => { const e = document.getElementById(id); if (e) e.textContent = v || '—'; };
+  setDir('dir-json', cfg.json_dir); setDir('dir-install', cfg.install_dir); setDir('dir-games', cfg.games_dir);
+  setSettingsTab(tab && typeof tab === 'string' ? tab : 'appearance');
+  document.getElementById('settingsModal').style.display = 'flex';
+  refreshGogStatus();
+  // Show which at-rest backend protects the SGDB key / secrets.
+  call('security_status').then(r => {
+    const el = document.getElementById('secBackend');
+    if (!el || !r || !r.ok) return;
+    const label = r.backend === 'tpm' ? '🔒 TPM ' + t('sec.tpm')
+                : r.backend === 'dpapi' ? '🔐 DPAPI ' + t('sec.dpapi')
+                : '⚠ ' + t('sec.xor');
+    el.textContent = t('sec.prefix') + ': ' + label;
+  });
+}
+
+async function pickDir(which) {
+  const map = { json: 'choose_json_dir', install: 'choose_install_dir', games: 'choose_games_dir' };
+  const r = await call(map[which]);
+  if (r && r.ok) {
+    if (which === 'json')    cfg.json_dir    = r.json_dir;
+    if (which === 'install') cfg.install_dir = r.install_dir;
+    if (which === 'games')   cfg.games_dir   = r.games_dir;
+    document.getElementById('dir-' + which).textContent =
+      (which === 'json' ? r.json_dir : which === 'install' ? r.install_dir : r.games_dir) || '—';
+    toast(t('set.dirSaved'), 'ok');
+    refreshAll();
+  }
+}
+
+async function rebuildIndex() {
+  cfg = await call('build_index');
+  games = await call('get_games');
+  renderList(); if (sel) renderMain(); updateCfg();
+  toast('↺ ' + t('set.rebuild').replace(/^↺\s*/, ''), 'ok');
+}
+
+let _gogUrl = '';
+async function refreshGogStatus() {
+  const el = document.getElementById('gogStatus');
+  const big = document.getElementById('gogStatusBig');
+  const btn = document.getElementById('gogLoginBtn');
+  const tbLoginTxt = document.getElementById('tbLoginTxt');
+  const tbLoginBtn = document.getElementById('tbLogin');
+  const tbDot = document.getElementById('tbLoginDot');
+  if (el) el.textContent = t('set.checking');
+  const r = await call('gog_login_status');
+  const logged = !!(r && r.logged_in);
+  if (el) el.textContent = logged ? t('set.loggedIn') : t('set.notLoggedIn');
+  if (big) big.classList.toggle('ok', logged);
+  if (btn) btn.textContent = logged ? t('set.reLogin') : t('set.login');
+  if (tbLoginTxt) tbLoginTxt.textContent = logged ? t('tb.loggedIn') : t('tb.notLoggedIn');
+  if (tbLoginBtn) tbLoginBtn.classList.toggle('in', logged);
+  if (tbDot) tbDot.textContent = logged ? '●' : '◌';
+}
+
+async function openGogLogin() {
+  document.getElementById('gogMsg').textContent = '';
+  document.getElementById('gogPaste').value = '';
+  const r = await call('gog_login_start');
+  _gogUrl = (r && r.url) || '';
+  document.getElementById('gogModal').style.display = 'flex';
+}
+function reopenGogUrl() { if (_gogUrl) window.open(_gogUrl, '_blank'); }
+function closeGogLogin() { document.getElementById('gogModal').style.display = 'none'; }
+
+async function finishGogLogin() {
+  const pasted = document.getElementById('gogPaste').value;
+  const msg = document.getElementById('gogMsg');
+  const btn = document.getElementById('gogFinishBtn');
+  msg.textContent = 'Wymiana kodu…'; btn.disabled = true;
+  const r = await call('gog_login_finish', pasted);
+  btn.disabled = false;
+  if (r && r.ok) {
+    msg.textContent = '✓ Zalogowano.';
+    closeGogLogin();
+    refreshGogStatus();
+  } else {
+    msg.textContent = '✗ ' + ((r && r.error) || 'Nie udało się.');
+  }
+}
+
+function closeSettings() {
+  document.getElementById('settingsModal').style.display = 'none';
+}
+
+function applySettingsFromForm() {
+  applySettings(settingsFromForm());
+}
+
+async function saveSettingsFromForm() {
+  const disk = await call('get_settings');
+  const keyChanged =
+    (disk.sgdb_key || '') !== (document.getElementById('s-sgdb-key')?.value || '').trim() ||
+    (disk.art_hero_source || 'gog')  !== artHeroSource ||
+    (disk.art_logo_source || 'sgdb') !== artLogoSource;
+  const s = { ...disk, ...settingsFromForm() };
+  applySettings(s);
+  await call('save_settings', s);
+  toast(t('set.saved'), 'ok');
+  // A new SGDB key means cached hero art is stale — clear and reload current game.
+  if (keyChanged) {
+    Object.keys(_heroArtCache).forEach(k => delete _heroArtCache[k]);
+    const cur = games.find(g => g.id === sel);
+    if (cur) { try { await call('refresh_hero_art', String(sel)); } catch (e) {} loadHeroArt(cur); }
+  }
+}
+
+async function testSgdb() {
+  const msg = document.getElementById('sgdbTestMsg');
+  const key = (document.getElementById('s-sgdb-key')?.value || '').trim();
+  const disk = await call('get_settings');
+  if (!key && !disk.sgdb_key_set) { msg.textContent = '✗ ' + t('set.sgdbNoKey'); return; }
+  // If the user typed a new key, persist it first (to the encrypted store); an
+  // empty field tests the key that's already saved.
+  if (key) await call('save_settings', { sgdb_key: key });
+  msg.textContent = t('set.checking');
+  const r = await call('sgdb_test');
+  msg.textContent = (r && r.ok) ? '✓ ' + t('set.sgdbOk') : '✗ ' + ((r && r.error) || t('set.sgdbFail'));
+}
+
+async function resetSettings() {
+  const disk = await call('get_settings');
+  const s = { ...DEFAULT_SETTINGS,
+              'lang':         disk['lang'],
+              '--sidebar-w':  disk['--sidebar-w'],
+              '--wrap-left':  disk['--wrap-left'],
+              '--hero-h':     disk['--hero-h'],
+              '--activity-h': disk['--activity-h'] };
+  Object.keys(s).forEach(k => s[k] === undefined && delete s[k]);
+  settingsToForm(s);
+  applySettings(s);
+  await call('save_settings', s);
+  toast(t('set.saved'), 'ok');
+}
+
+/* ════════════════════════════════════════
+   TOASTS
+════════════════════════════════════════ */
+function toast(message, kind) {
+  const wrap = document.getElementById('toasts');
+  if (!wrap) return;
+  const el = document.createElement('div');
+  el.className = 'toast ' + (kind || '');
+  const ico = kind === 'ok' ? '✓' : kind === 'err' ? '✕' : 'ℹ';
+  el.innerHTML = `<span class="toast-ico">${ico}</span><span>${esc(message)}</span>`;
+  wrap.appendChild(el);
+  setTimeout(() => {
+    el.classList.add('leaving');
+    setTimeout(() => el.remove(), 220);
+  }, 3200);
+}
+
+/* ════════════════════════════════════════
+   COMMAND PALETTE (Ctrl+K)
+════════════════════════════════════════ */
+let _palItems = [], _palActive = 0;
+function _paletteActions() {
+  return [
+    { kind: 'action', icon: '⟳', label: t('pa.sync'),     run: () => document.getElementById('tbSync').click() },
+    { kind: 'action', icon: '⚙', label: t('pa.settings'), run: () => openSettings() },
+    { kind: 'action', icon: '🗒', label: t('pa.log'),      run: () => togglePanel(true) },
+    { kind: 'action', icon: '🌐', label: t('pa.lang'),     run: () => { setLang(LANG === 'pl' ? 'en' : 'pl', true); syncLangButtons(); } },
+  ];
+}
+function openPalette() {
+  document.getElementById('palette').style.display = 'flex';
+  const inp = document.getElementById('paletteInput');
+  inp.value = ''; renderPalette(''); inp.focus();
+}
+function closePalette() { document.getElementById('palette').style.display = 'none'; }
+function renderPalette(q) {
+  q = (q || '').toLowerCase();
+  const gs = games.filter(g => g.title.toLowerCase().includes(q)).slice(0, 8)
+    .map(g => ({ kind: 'game', icon: g.icon, label: g.title,
+                 sub: g.installed ? t('status.installed') : g.downloaded ? t('status.downloaded') : t('status.notDownloaded'),
+                 run: () => { sel = g.id; renderList(); renderMain(); closePalette(); } }));
+  const acts = _paletteActions().filter(a => a.label.toLowerCase().includes(q));
+  _palItems = [...gs, ...acts]; _palActive = 0;
+  const box = document.getElementById('paletteResults');
+  if (!_palItems.length) { box.innerHTML = `<div class="pal-section">${t('palette.noResults')}</div>`; return; }
+  let h = '';
+  if (gs.length) h += `<div class="pal-section">${t('palette.games')}</div>`;
+  gs.forEach((it, i) => h += _palRow(it, i));
+  if (acts.length) h += `<div class="pal-section">${t('palette.actions')}</div>`;
+  acts.forEach((it, i) => h += _palRow(it, gs.length + i));
+  box.innerHTML = h;
+  _highlightPal();
+}
+function _palRow(it, i) {
+  const ico = it.kind === 'game' && it.icon
+    ? `<img class="pal-ico" src="${toUrl(it.icon)}" onerror="this.style.visibility='hidden'">`
+    : `<span class="pal-ico">${it.icon || '•'}</span>`;
+  return `<div class="pal-item" data-i="${i}" onclick="_palRun(${i})">
+    ${ico}<div class="pal-main"><div class="pal-name">${esc(it.label)}</div>${it.sub ? `<div class="pal-sub">${esc(it.sub)}</div>` : ''}</div>
+    <span class="pal-kind">${it.kind === 'game' ? '↵' : t('palette.actions')}</span></div>`;
+}
+function _highlightPal() {
+  document.querySelectorAll('.pal-item').forEach(el =>
+    el.classList.toggle('active', +el.getAttribute('data-i') === _palActive));
+  const active = document.querySelector('.pal-item.active');
+  if (active && active.scrollIntoView) active.scrollIntoView({ block: 'nearest' });
+}
+function _palRun(i) { const it = _palItems[i]; if (it) it.run(); }
+
+/* ── resizable panels ── */
+let _drag = null;
+function _clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
+
+document.addEventListener('mousedown', e => {
+  const t = e.target;
+  if (t.id === 'sidebarGutter') {
+    _drag = { kind: 'sidebar', el: t };
+  } else if (t.id === 'wrapGutter') {
+    _drag = { kind: 'wrap', el: t, wrap: t.parentElement };
+  } else if (t.id === 'heroGutter') {
+    const hero = t.previousElementSibling;          // the .hero section
+    _drag = { kind: 'hero', el: t, top: hero.getBoundingClientRect().top };
+  } else if (t.id === 'activityGutter') {
+    document.getElementById('actPanel').classList.add('open');
+    _drag = { kind: 'activity', el: t };
+  } else { return; }
+  t.classList.add('dragging');
+  document.body.style.userSelect = 'none';
+  e.preventDefault();
+});
+
+document.addEventListener('mousemove', e => {
+  if (!_drag) return;
+  const root = document.documentElement.style;
+  if (_drag.kind === 'sidebar') {
+    root.setProperty('--sidebar-w', _clamp(e.clientX, 230, 640) + 'px');
+  } else if (_drag.kind === 'wrap') {
+    const r = _drag.wrap.getBoundingClientRect();
+    const pct = _clamp(((e.clientX - r.left) / r.width) * 100, 28, 78);
+    root.setProperty('--wrap-left', pct.toFixed(1) + '%');
+  } else if (_drag.kind === 'hero') {
+    root.setProperty('--hero-h', _clamp(e.clientY - _drag.top, 96, 460) + 'px');
+  } else if (_drag.kind === 'activity') {
+    root.setProperty('--activity-h', _clamp(window.innerHeight - e.clientY, 90, 640) + 'px');
+  }
+});
+
+document.addEventListener('mouseup', () => {
+  if (!_drag) return;
+  if (_drag.el) _drag.el.classList.remove('dragging');
+  document.body.style.userSelect = '';
+  _drag = null;
+  saveLayout();
+});
+
+async function saveLayout() {
+  const disk = await call('get_settings');
+  const st = document.documentElement.style;
+  for (const k of ['--sidebar-w', '--wrap-left', '--hero-h', '--activity-h']) {
+    const v = st.getPropertyValue(k);
+    if (v) disk[k] = v.trim();
+  }
+  await call('save_settings', disk);
+}
+
+/* ── screenshot lightbox ── */
+/* Swap the hero background to GOG's crisp store art (catalog API), if available.
+   Runs after render; falls back silently to the screenshot already shown. */
+const _heroArtCache = {};
+const _extrasCache = {};
+
+const _EXTRA_ICONS = {
+  'soundtrack':'🎵','audio':'🎵','music':'🎵',
+  'wallpaper':'🖼','wallpapers':'🖼','artwork':'🖼','art':'🖼','avatar':'🖼','avatars':'🖼',
+  'manual':'📖','guide':'📖','book':'📖','artbook':'📖','comic':'📖','e-book':'📖',
+  'video':'🎬','movie':'🎬',
+  'map':'🗺','game add-ons':'🧩','mod':'🧩',
+};
+function _extraIcon(type) {
+  const key = String(type || '').toLowerCase();
+  for (const k in _EXTRA_ICONS) if (key.includes(k)) return _EXTRA_ICONS[k];
+  return '📦';
+}
+
+async function loadExtras(g) {
+  const id = String(g.id);
+  const render = list => {
+    if (sel !== g.id) return;
+    const box = document.getElementById('extrasBody');
+    if (!box) return;
+    if (!list || !list.length) {
+      box.innerHTML = `<div class="small">${t('detail.extrasNone')}</div>`;
+      return;
+    }
+    box.innerHTML = list.map(e =>
+      `<div class="extra-row">
+         <span class="extra-ico">${_extraIcon(e.type)}</span>
+         <span class="extra-name" title="${esc(e.name)}">${esc(e.name)}</span>
+         <span class="extra-size">${formatSize(e.size || 0)}</span>
+       </div>`).join('');
+  };
+  if (_extrasCache[id] !== undefined) { render(_extrasCache[id]); return; }
+  try {
+    const r = await call('get_game_extras', id);
+    const list = (r && r.ok) ? (r.extras || []) : [];
+    _extrasCache[id] = list;
+    render(list);
+  } catch (e) { _extrasCache[id] = []; render([]); }
+}
+/* ── per-game art picker (hero + logo from SGDB + GOG) ──────────────────── */
+let _ovrOptions = null;
+async function openSgdbOverride() {
+  const g = games.find(x => x.id === sel);
+  if (!g) return;
+  document.getElementById('ovrGameTitle').textContent = g.title || '—';
+  document.getElementById('ovrMsg').textContent = '';
+  document.getElementById('sgdbOverrideInput').value = '';
+  const link = document.getElementById('ovrSearchLink');
+  if (link) link.href = 'https://www.steamgriddb.com/search/grids?term=' + encodeURIComponent(g.title || '');
+  document.getElementById('ovrHeroes').innerHTML = `<div class="dl-empty small">${t('ovr.loading')}</div>`;
+  document.getElementById('ovrLogos').innerHTML  = `<div class="dl-empty small">${t('ovr.loading')}</div>`;
+  document.getElementById('sgdbOverrideModal').style.display = 'flex';
+  loadArtOptions();
+}
+function closeSgdbOverride() { document.getElementById('sgdbOverrideModal').style.display = 'none'; }
+
+async function applySgdbOverride() {
+  const val = (document.getElementById('sgdbOverrideInput').value || '').trim();
+  const msg = document.getElementById('ovrMsg');
+  if (!val) { msg.textContent = '✗ ' + t('ovr.enter'); return; }
+  msg.textContent = t('ovr.applying');
+  const r = await call('set_sgdb_override', String(sel), val);
+  if (r && r.ok) {
+    msg.textContent = '✓ SGDB #' + r.sgdb_id;
+    _applyArtToHero(r);
+    loadArtOptions();          // reload galleries from the corrected SGDB game
+  } else {
+    msg.textContent = '✗ ' + ((r && r.error) || t('ovr.fail'));
+  }
+}
+
+async function loadArtOptions() {
+  try {
+    const r = await call('get_art_options', String(sel));
+    _ovrOptions = r;
+    if (!r || !r.ok) { document.getElementById('ovrMsg').textContent = '✗ ' + ((r && r.error) || ''); return; }
+    if (r.sgdb_id) document.getElementById('sgdbOverrideInput').placeholder = 'SGDB ID: ' + r.sgdb_id;
+    renderGallery('ovrHeroes', r.heroes || [], 'hero', r.current && r.current.hero);
+    renderGallery('ovrLogos',  r.logos  || [], 'logo', r.current && r.current.logo);
+  } catch (e) { document.getElementById('ovrMsg').textContent = '✗ ' + e; }
+}
+
+function renderGallery(elId, items, asset, current) {
+  const box = document.getElementById(elId);
+  if (!items.length) { box.innerHTML = `<div class="dl-empty small">${t('ovr.none')}</div>`; return; }
+  const curUrl = current && current.pinned ? current.url : null;
+  box.innerHTML = items.map((it, i) => {
+    const sel_ = curUrl && curUrl === it.url ? ' selected' : '';
+    const cls = asset === 'logo' ? 'ovr-thumb logo' : 'ovr-thumb';
+    const badge = it.source === 'gog' ? 'GOG' : 'SGDB';
+    return `<button class="${cls}${sel_}" title="${badge}" onclick="pickAsset('${asset}',${i})">
+              <img src="${it.thumb || it.url}" loading="lazy" onerror="this.parentNode.style.opacity=.3">
+              <span class="ovr-badge">${badge}</span>
+            </button>`;
+  }).join('');
+}
+
+async function pickAsset(asset, idx) {
+  const list = asset === 'hero' ? _ovrOptions.heroes : _ovrOptions.logos;
+  const it = list && list[idx];
+  if (!it) return;
+  const r = await call('set_art_asset', String(sel), asset, it.url, it.source);
+  if (r && r.ok) {
+    _applyArtToHero(r);
+    // reflect selection in the gallery
+    renderGallery(asset === 'hero' ? 'ovrHeroes' : 'ovrLogos', list, asset,
+                  { url: it.url, source: it.source, pinned: true });
+    toast((asset === 'hero' ? t('ovr.hero') : t('ovr.logo')) + ' ✓', 'ok');
+  }
+}
+
+async function pickAuto(asset) {
+  const r = await call('clear_art_asset', String(sel), asset);
+  if (r && r.ok) {
+    _applyArtToHero(r);
+    if (_ovrOptions) renderGallery(asset === 'hero' ? 'ovrHeroes' : 'ovrLogos',
+                                   asset === 'hero' ? _ovrOptions.heroes : _ovrOptions.logos, asset, null);
+    toast(t('ovr.autoDone'), 'ok');
+  }
+}
+
+function _applyArtToHero(r) {
+  // Update the live hero immediately from a get_hero_art-shaped result.
+  Object.keys(_heroArtCache).forEach(k => delete _heroArtCache[k]);
+  const cur = games.find(x => x.id === sel);
+  if (cur) loadHeroArt(cur);
+}
+
+async function loadHeroArt(g) {
+  const id = String(g.id);
+  const ck = id + '|' + artHeroSource + '|' + artLogoSource;   // cache per source
+  const apply = art => {
+    if (sel !== g.id) return;
+    const bg = document.getElementById('heroBg');
+    if (bg) {
+      // Use the chosen source's bg; if it's empty, restore the GOG default rather
+      // than leaving whatever (e.g. SGDB) was shown before the source changed.
+      const url = art.url || bg.dataset.gogBg || '';
+      if (url) bg.style.backgroundImage = `url('${url}')`;
+    }
+    const lg = document.getElementById('heroLogo');
+    if (lg) {
+      // Strict: show ONLY the chosen source's logo. The backend already includes
+      // GOG's product logo under the 'gog' source, so an empty logo here means the
+      // chosen source genuinely has none → show the title, never the other source.
+      const logo = art.logo || '';
+      const fb = document.getElementById('heroFallback');
+      if (logo) {
+        lg.src = logo; lg.style.display = ''; lg.style.visibility = 'visible';
+        if (fb) fb.style.display = 'none';
+      } else {
+        lg.style.display = 'none';
+        if (fb) fb.style.display = 'block';
+      }
+    }
+    const badge = document.getElementById('heroSrcBadge');
+    if (badge && (art.hero_source || art.logo_source)) {
+      const up = s => (s === 'sgdb' ? 'SGDB' : s === 'gog' ? 'GOG' : '—');
+      badge.textContent = `hero: ${up(art.hero_source)} · logo: ${up(art.logo_source)}`;
+    }
+  };
+  if (_heroArtCache[ck] !== undefined) { apply(_heroArtCache[ck]); return; }
+  try {
+    const r = await call('get_hero_art', id);
+    const art = (r && r.ok) ? { url: r.url || '', logo: r.logo || '',
+                                hero_source: r.hero_source || '', logo_source: r.logo_source || '' }
+                            : { url: '', logo: '' };
+    _heroArtCache[ck] = art;
+    apply(art);
+  } catch (e) { _heroArtCache[ck] = { url: '', logo: '' }; }
+}
+
+function openLightbox(url) {
+  if (!url) return;
+  document.getElementById('lightboxImg').src = url;
+  document.getElementById('lightbox').style.display = 'flex';
+}
+function closeLightbox() {
+  document.getElementById('lightbox').style.display = 'none';
+  document.getElementById('lightboxImg').src = '';
+}
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape') closeLightbox();
+});
+
+/* ════════════════════════════════════════
+   REFRESH HELPER
+════════════════════════════════════════ */
+async function refreshAll() {
+  cfg   = await call('build_index');
+  games = await call('get_games');
+  renderList();
+  renderMain();
+  updateCfg();
+}
+
+/* ════════════════════════════════════════
+   CONFIG BAR
+════════════════════════════════════════ */
+function updateCfg() {
+  // Directory values live in the Settings → Directories panel now.
+  const setDir = (id, v) => { const e = document.getElementById(id); if (e) e.textContent = v || '—'; };
+  setDir('dir-json',    cfg.json_dir);
+  setDir('dir-install', cfg.install_dir);
+  setDir('dir-games',   cfg.games_dir);
+  // Idle status-bar message reflects library size.
+  if (!isRunning) {
+    const sb = document.getElementById('sbMsg');
+    if (sb) sb.textContent = games.length ? t('sb.games', {n: games.length}) : t('sb.noTasks');
+  }
+}
+
+/* ════════════════════════════════════════
+   GAME LIST  (filter + sort)
+════════════════════════════════════════ */
+let filterMode = 'all';
+const SORT_MODES = ['title', 'size', 'year', 'status'];
+let sortIdx = 0;
+
+function setFilter(mode) {
+  filterMode = mode;
+  document.querySelectorAll('.sb-tab').forEach(b =>
+    b.classList.toggle('active', b.getAttribute('data-filter') === mode));
+  renderList();
+}
+function cycleSort() {
+  sortIdx = (sortIdx + 1) % SORT_MODES.length;
+  document.getElementById('sortLabel').textContent = t('sort.' + SORT_MODES[sortIdx]);
+  renderList();
+}
+function _filteredGames() {
+  const q = document.getElementById('q').value.toLowerCase();
+  let arr = games.filter(g =>
+    [g.title, g.slug, g.game_key, ...(g.platforms||[])].join(' ').toLowerCase().includes(q));
+  if (filterMode === 'installed')  arr = arr.filter(g => g.installed);
+  // "Downloaded" = has a downloaded installer/extras, independent of whether the
+  // game is also physically installed (GOGinstall vs GOG_Games are separate).
+  if (filterMode === 'downloaded') arr = arr.filter(g => g.downloaded);
+  const mode = SORT_MODES[sortIdx];
+  const yr = g => parseInt(g.release_year || (g.product && g.product.release_date || '').slice(0,4)) || 0;
+  arr.sort((a, b) => {
+    if (mode === 'size')   return (b.installer_size||0) - (a.installer_size||0);
+    if (mode === 'year')   return yr(b) - yr(a);
+    if (mode === 'status') return (b.installed - a.installed) || (b.downloaded - a.downloaded)
+                                  || a.title.localeCompare(b.title);
+    return a.title.localeCompare(b.title);
+  });
+  return arr;
+}
+function renderList() {
+  const el = document.getElementById('list');
+  el.innerHTML = '';
+  const arr = _filteredGames();
+  const cnt = document.getElementById('listCount');
+  if (cnt) cnt.textContent = `${arr.length} / ${games.length}`;
+
+  arr.forEach(g => {
+   try {
+    const b = document.createElement('button');
+    b.className = 'item' + (g.id === sel ? ' active' : '');
+    const pip = g.installed
+      ? `<span class="status-pip pip-ok" title="${t('status.installed')}"></span>`
+      : g.downloaded
+        ? `<span class="status-pip pip-dl" title="${t('status.downloaded')}"></span>`
+        : '';
+    const statusTxt = g.installed ? t('status.installed')
+                    : g.downloaded ? t('status.downloaded')
+                    : t('status.notDownloaded');
+    const plats = (g.platforms||[]).join(', ');
+    const sub = plats ? `${statusTxt} · ${plats}` : statusTxt;
+    b.innerHTML =
+      `<div style="position:relative;flex:0 0 auto">` +
+        `<img class="item-icon" src="${toUrl(g.icon)}" onerror="this.style.visibility='hidden'">` +
+        pip +
+      `</div>` +
+      `<div style="min-width:0">` +
+        `<div style="font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(g.title)}</div>` +
+        `<div class="small item-sub">${esc(sub)}</div>` +
+      `</div>`;
+    b.onclick = () => { sel = g.id; renderList(); renderMain(); };
+    el.appendChild(b);
+   } catch (err) {
+    console.error('[renderList] pominięto grę z powodu błędu:', g && g.slug, err);
+   }
+  });
+}
+
+/* ════════════════════════════════════════
+   HERO HELPERS
+════════════════════════════════════════ */
+function gameStatusChips(g) {
+  const chips = [];
+  if (g.installed)
+    chips.push(`<span class="chip chip-ok">${t('status.installed')}</span>`);
+  if (g.downloaded) {
+    const sz = g.installer_size ? ` · ${formatSize(g.installer_size)}` : '';
+    chips.push(`<span class="chip chip-dl">${t('status.downloaded')}${sz}</span>`);
+    if (g.extras_size)
+      chips.push(`<span class="chip chip-dl">🎁 ${(g.extras_files||[]).length} · ${formatSize(g.extras_size)}</span>`);
+  }
+  if (!g.installed && !g.downloaded)
+    chips.push(`<span class="chip chip-none">${t('status.notDownloaded')}</span>`);
+  return chips.join('');
+}
+
+function gameActionButtons(g) {
+  const dis  = isRunning ? ' disabled' : '';
+  const btns = [];
+
+  if (g.installed) {
+    // Installed: green Launch, folder, optional installer delete
+    btns.push(`<button class="btn play"${dis} id="launchBtn">${t('btn.launch')}</button>`);
+    if (g.downloaded) {
+      const sz = g.installer_size ? ` (${formatSize(g.installer_size)})` : '';
+      btns.push(`<button class="btn btn-danger"${dis} id="deleteInstallerBtn">${t('btn.deleteInstaller')}${sz}</button>`);
+    }
+    btns.push(`<button class="btn"${dis} id="openGameBtn">${t('btn.openGame')}</button>`);
+    btns.push(`<button class="btn btn-danger"${dis} id="deleteGameBtn">${t('btn.deleteGame')}</button>`);
+  } else if (g.downloaded) {
+    // Downloaded but not installed: green Run installer + management
+    btns.push(`<button class="btn play"${dis} id="runInstallerBtn">${t('btn.runInstaller')}</button>`);
+    const sz = g.installer_size ? ` (${formatSize(g.installer_size)})` : '';
+    btns.push(`<button class="btn btn-danger"${dis} id="deleteInstallerBtn">${t('btn.deleteInstaller')}${sz}</button>`);
+    btns.push(`<button class="btn"${dis} id="openInstallerBtn">${t('btn.openInstaller')}</button>`);
+    btns.push(`<button class="btn"${dis} id="reDownloadBtn">${t('btn.reDownload')}</button>`);
+  } else {
+    // Not downloaded: download the offline installer OR install straight from
+    // Galaxy depots (no installer file at all — files assembled into GOG Games)
+    btns.push(`<button class="btn primary"${dis} id="downloadBtn">${t('btn.download')}</button>`);
+    btns.push(`<button class="btn"${dis} id="depotInstallBtn">${t('btn.depotInstall')}</button>`);
+  }
+
+  if (g.downloaded)
+    btns.push(`<button class="btn"${dis} id="updateBtn">${t('btn.update')}</button>`);
+  btns.push(`<button class="btn"${dis} id="syncBtn">${t('btn.syncGame')}</button>`);
+  return `<div class="hero-buttons">${btns.join('')}</div>`;
+}
+
+/* ════════════════════════════════════════
+   DELETE INSTALLER
+════════════════════════════════════════ */
+function confirmDeleteInstaller(g) {
+  const sz    = formatSize(g.installer_size || 0);
+  const flist = (g.installer_files || []).slice(0, 6).join('\n');
+  if (!confirm(
+    `Usunąć pliki instalatora gry:\n"${g.title}"\n\nRozmiar: ${sz}\nPliki:\n${flist}\n\nTej operacji nie można cofnąć.`
+  )) return;
+
+  call('delete_installer', String(g.id)).then(r => {
+    if (r.ok) {
+      window.appendTerminalLine(`[✓ Usunięto installer: ${r.deleted_path}]`);
+      refreshAll();
+    } else {
+      window.appendTerminalLine(`[✗ Błąd: ${r.error}]`);
+    }
+  });
+}
+
+function confirmDeleteInstalledGame(g) {
+  if (!confirm(
+    `Usunąć ZAINSTALOWANĄ grę:\n"${g.title}"\n\nKatalog:\n${g.installed_path || ''}\n\n`
+    + `Cały ten katalog zostanie trwale usunięty. Tej operacji nie można cofnąć.`
+  )) return;
+
+  call('delete_installed_game', String(g.id)).then(r => {
+    if (r.ok) {
+      window.appendTerminalLine(`[✓ Usunięto grę: ${r.deleted_path}]`);
+      toast('✓ ' + t('btn.deleteGame').replace(/^🗑\s*/, ''), 'ok');
+      refreshAll();
+    } else {
+      window.appendTerminalLine(`[✗ Błąd: ${r.error}]`);
+      toast('✗ ' + (r.error || ''), 'err');
+    }
+  });
+}
+
+/* ════════════════════════════════════════
+   GAME DETAIL VIEW
+════════════════════════════════════════ */
+function renderMain() {
+  const view = document.getElementById('game-view');
+  const g    = games.find(x => x.id === sel) || games[0];
+
+  if (!g) {
+    view.innerHTML = `<div style="padding:28px" class="small">${t('detail.noData')}</div>`;
+    return;
+  }
+
+  const p       = g.product || {};
+  const d       = g.details || {};
+  const shots   = (p.screenshots || []).slice(0, 4)
+                    .map(s => ({ thumb: shotUrl(s), big: shotUrlBig(s) }))
+                    .filter(s => s.thumb);
+  const heroBg  = shots[0]?.big || shots[0]?.thumb
+                || toUrl(p.images?.background || d.backgroundImage);
+
+  view.innerHTML = `
+    <!-- HERO -->
+    <section class="hero">
+      <div class="hero-bg" id="heroBg" data-gog-bg="${heroBg}" style="background-image:url('${heroBg}')"></div>
+      <div class="hero-scrim"></div>
+      <div class="hero-content">
+        <div class="hero-logo">
+          <img id="heroLogo" src="${toUrl(p.images?.logo||p.images?.icon)}" data-gog-logo="${toUrl(p.images?.logo||p.images?.icon)}"
+               onerror="this.style.display='none';var f=document.getElementById('heroFallback');if(f)f.style.display='block'">
+          <h1 class="hero-fallback-title" id="heroFallback" style="display:none">${esc(g.title)}</h1>
+        </div>
+        ${gameActionButtons(g)}
+      </div>
+      <span class="hero-src-badge" id="heroSrcBadge"></span>
+      <button class="hero-fix-btn" id="heroFixBtn" title="Popraw grafikę (SGDB)" onclick="openSgdbOverride()">🔧</button>
+    </section>
+
+    <!-- drag to resize the hero/title bar height -->
+    <div class="h-gutter" id="heroGutter" title="Przeciągnij, aby zmienić wysokość belki"></div>
+
+    <!-- CONTENT WRAP -->
+    <div class="wrap">
+      <section class="card fill">
+        <h2>${t('detail.description')}</h2>
+        <div class="body description">
+          ${p.description?.full || p.description?.lead || `<p style="color:var(--muted)">${t('detail.noDescription')}</p>`}
+        </div>
+      </section>
+
+      <div class="wrap-gutter" id="wrapGutter" title="Przeciągnij, aby zmienić podział"></div>
+
+      <div class="right-col">
+        <section class="card">
+          <h2>${t('detail.screenshots')}</h2>
+          <div class="body">
+            ${shots.length
+              ? `<div class="screens">${shots.map(s=>`<div class="screen" onclick="openLightbox('${s.big||s.thumb}')"><img src="${s.thumb}" loading="lazy"></div>`).join('')}</div>`
+              : `<div class="small">${t('detail.noScreenshots')}</div>`}
+          </div>
+        </section>
+
+        <section class="card">
+          <h2>${t('detail.metadata')}</h2>
+          <div class="body">
+            <div class="meta-grid">
+              <div class="fact"><div class="label">${t('detail.releaseDate')}</div><div class="value">${esc(p.release_date||d.releaseTimestamp||'—')}</div></div>
+              <div class="fact"><div class="label">${t('detail.installable')}</div><div class="value">${p.is_installable?t('detail.yes'):t('detail.no')}</div></div>
+              <div class="fact"><div class="label">${t('detail.languages')}</div><div class="value" style="font-size:11px">${esc(Object.values(p.languages||{}).join(', ')||'—')}</div></div>
+              <div class="fact"><div class="label">${t('detail.platforms')}</div><div class="value">${esc((g.platforms||[]).join(', ')||'—')}</div></div>
+              <div class="fact"><div class="label">${t('detail.forum')}</div><div class="value"><a href="${esc(p.links?.forum||d.forumLink||'#')}" target="_blank">${t('detail.open')}</a></div></div>
+              <div class="fact"><div class="label">${t('detail.support')}</div><div class="value"><a href="${esc(p.links?.support||'#')}" target="_blank">${t('detail.open')}</a></div></div>
+            </div>
+            ${g.downloaded && g.installer_files?.length ? `
+            <div style="margin-top:12px;padding-top:12px;border-top:1px solid var(--line)">
+              <div class="label" style="margin-bottom:6px">${t('detail.installerFiles')}</div>
+              ${g.installer_files.map(f=>`<div class="small" style="margin-bottom:3px">📄 ${esc(f)}</div>`).join('')}
+            </div>` : ''}
+          </div>
+        </section>
+
+        <section class="card">
+          <h2>${t('detail.extras')}</h2>
+          <div class="body" id="extrasBody">
+            <div class="small" data-i18n="detail.extrasLoading">Wczytywanie…</div>
+          </div>
+        </section>
+      </div>
+    </div>
+  `;
+
+  /* ── attach event handlers ── */
+
+  loadHeroArt(g);
+  loadExtras(g);
+
+  if (g.installed) {
+    const launchBtn = document.getElementById('launchBtn');
+    if (launchBtn) launchBtn.onclick = () => {
+      toast(t('toast.launch'), 'ok');
+      call('launch_game', String(g.id)).then(r => {
+        if (!r.ok) toast('✗ ' + (r.error || ''), 'err');
+      });
+    };
+
+    const openBtn = document.getElementById('openGameBtn');
+    if (openBtn) openBtn.onclick = () =>
+      call('open_folder', g.installed_path || '').then(r => {
+        if (!r.ok) toast('✗ ' + r.error, 'err');
+      });
+
+    if (g.downloaded) {
+      const delBtn = document.getElementById('deleteInstallerBtn');
+      if (delBtn) delBtn.onclick = () => confirmDeleteInstaller(g);
+    }
+
+    const delGameBtn = document.getElementById('deleteGameBtn');
+    if (delGameBtn) delGameBtn.onclick = () => confirmDeleteInstalledGame(g);
+
+  } else if (g.downloaded) {
+    const runBtn = document.getElementById('runInstallerBtn');
+    if (runBtn) runBtn.onclick = () =>
+      call('run_installer', String(g.id)).then(r => {
+        if (r.ok) toast(t('toast.installer'), 'ok');
+        else      toast('✗ ' + r.error, 'err');
+      });
+
+    const delBtn = document.getElementById('deleteInstallerBtn');
+    if (delBtn) delBtn.onclick = () => confirmDeleteInstaller(g);
+
+    const openBtn = document.getElementById('openInstallerBtn');
+    if (openBtn) openBtn.onclick = () =>
+      call('open_folder', g.installer_path || '').then(r => {
+        if (!r.ok) window.appendTerminalLine('✗ ' + r.error);
+      });
+
+    const reDlBtn = document.getElementById('reDownloadBtn');
+    if (reDlBtn) reDlBtn.onclick = () => openDownloadModal(g);
+
+  } else {
+    const dlBtn = document.getElementById('downloadBtn');
+    if (dlBtn) dlBtn.onclick = () => openDownloadModal(g);
+
+    const depBtn = document.getElementById('depotInstallBtn');
+    if (depBtn) depBtn.onclick = () => openDownloadModal(g, 'install');
+  }
+
+  const updateBtn = document.getElementById('updateBtn');
+  if (updateBtn) updateBtn.onclick = () => {
+    if (!confirm(
+      `Zaktualizować installery + extras gry:\n"${g.title}"\n\n`
+      + `Pobrane zostaną nowsze wersje, a stare (osierocone) pliki zostaną `
+      + `TRWALE usunięte. Tej operacji nie można cofnąć.`
+    )) return;
+    runCmd(() => call('update_game', String(g.id)), refreshAll, `aktualizacja: ${g.title}…`);
+  };
+
+  const syncBtn = document.getElementById('syncBtn');
+  if (syncBtn) syncBtn.onclick = () =>
+    runCmd(() => call('sync_json_game', String(g.id)), refreshAll, `JSON: ${g.title}…`);
+}
+
+/* ════════════════════════════════════════
+   TOP BAR + SEARCH + KEYBOARD
+════════════════════════════════════════ */
+document.getElementById('q').addEventListener('input', renderList);
+
+document.getElementById('tbSync').onclick = () =>
+  runCmd(() => call('sync_json_all'), refreshAll, t('tb.sync') + '…');
+
+document.getElementById('tbUpdateAll').onclick = () => {
+  const n = games.filter(g => g.downloaded).length;
+  if (!n) { toast(LANG === 'pl' ? 'Brak pobranych gier.' : 'No downloaded games.', 'err'); return; }
+  if (!confirm(
+    (LANG === 'pl'
+      ? `Zaktualizować WSZYSTKIE pobrane gry (${n})?\n\n`
+        + `Dla każdej: pobranie nowszych installerów/extras i TRWAŁE usunięcie `
+        + `starych (osieroconych) plików. Może potrwać długo. Tej operacji nie można cofnąć.`
+      : `Update ALL downloaded games (${n})?\n\n`
+        + `For each: fetch newer installers/extras and PERMANENTLY delete old `
+        + `(orphaned) files. May take a while. This cannot be undone.`)
+  )) return;
+  runCmd(() => call('update_all_games'), refreshAll, t('tb.updateAll') + '…');
+};
+
+// Command palette input + keyboard navigation
+document.getElementById('paletteInput').addEventListener('input', e => renderPalette(e.target.value));
+document.addEventListener('keydown', e => {
+  const paletteOpen = document.getElementById('palette').style.display !== 'none';
+  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') {
+    e.preventDefault();
+    paletteOpen ? closePalette() : openPalette();
+    return;
+  }
+  if (e.key === 'Escape') {
+    if (paletteOpen) { closePalette(); return; }
+    if (document.getElementById('actPanel').classList.contains('open')) { togglePanel(false); return; }
+  }
+  if (!paletteOpen) return;
+  if (e.key === 'ArrowDown') { e.preventDefault(); _palActive = Math.min(_palItems.length - 1, _palActive + 1); _highlightPal(); }
+  else if (e.key === 'ArrowUp') { e.preventDefault(); _palActive = Math.max(0, _palActive - 1); _highlightPal(); }
+  else if (e.key === 'Enter') { e.preventDefault(); _palRun(_palActive); }
+});
+
+/* ════════════════════════════════════════
+   DOWNLOAD SELECTION MODAL
+════════════════════════════════════════ */
+let _dlRows = [], _dlGame = null, _dlMode = 'download';
+
+const _DL_SECTIONS = [
+  ['installers',     'Instalatory'],
+  ['patches',        'Łatki'],
+  ['language_packs', 'Pakiety językowe'],
+  ['dlcs',           'DLC'],
+  ['extras',         'Extras'],
+];
+
+const _LANG_FLAGS = {
+  english:'🇬🇧', polish:'🇵🇱', german:'🇩🇪', french:'🇫🇷', spanish:'🇪🇸',
+  italian:'🇮🇹', russian:'🇷🇺', 'portuguese (brazilian)':'🇧🇷', portuguese:'🇵🇹',
+  japanese:'🇯🇵', korean:'🇰🇷', 'chinese (simplified)':'🇨🇳', chinese:'🇨🇳',
+  czech:'🇨🇿', dutch:'🇳🇱', hungarian:'🇭🇺', turkish:'🇹🇷', ukrainian:'🇺🇦',
+  en:'🇬🇧', pl:'🇵🇱', de:'🇩🇪', fr:'🇫🇷', es:'🇪🇸', it:'🇮🇹', ru:'🇷🇺',
+  ja:'🇯🇵', ko:'🇰🇷', zh:'🇨🇳', cs:'🇨🇿', nl:'🇳🇱', hu:'🇭🇺', tr:'🇹🇷', uk:'🇺🇦',
+};
+function _langFlag(r) {
+  const key = String(r.lang_full || r.lang || '').trim().toLowerCase();
+  return _LANG_FLAGS[key] || '';
+}
+
+function _dlRowMeta(r) {
+  if (['installer','patch','language_pack','dlc'].includes(r.category)) {
+    const os = ({windows:'Windows', mac:'macOS', linux:'Linux'})[r.os] || r.os || '';
+    const bits = [os, (r.lang_full || r.lang || '').toString()];
+    if (r.version) bits.push('v' + r.version);
+    return bits.filter(Boolean).join(' · ');
+  }
+  return r.type || '';
+}
+
+async function openDownloadModal(g, mode = 'download') {
+  if (isRunning) return;
+  _dlGame = g;
+  _dlMode = mode;
+  const install = (mode === 'install');
+  document.getElementById('dlKicker').textContent = install ? t('dl.titleInstall') : t('dl.titleDownload');
+  document.getElementById('dlTitle').textContent = g.title;
+  document.getElementById('dlSubtitle').textContent = install ? t('dl.installNote') : t('dl.subtitle');
+  document.getElementById('dlGo').textContent = install ? t('dl.goInstall') : t('dl.goDownload');
+  // The preset row is only meaningful for the classic download flow.
+  document.getElementById('dlRecommended').style.display = install ? 'none' : '';
+  document.querySelector('.dl-presets').style.display = install ? 'none' : 'flex';
+  document.getElementById('dlBody').innerHTML = `<div class="dl-empty">${t('dl.loading')}</div>`;
+  document.getElementById('downloadModal').style.display = 'flex';
+
+  const man = await call('get_downloads', String(g.id));
+  if (!man || !man.ok) {
+    document.getElementById('dlBody').innerHTML =
+      '<div class="dl-empty">✗ ' + esc((man && man.error) || t('dl.loadError')) + '</div>';
+    return;
+  }
+
+  _dlRows = [];
+  let html = '';
+  if (install)
+    html += `<div class="dl-group"><div class="dl-group-title" style="opacity:.8;text-transform:none;font-weight:400">${t('dl.installNote')}</div></div>`;
+
+  const sections = install
+    ? _DL_SECTIONS.filter(([f]) => f === 'extras' || f === 'dlcs' || f === 'language_packs')
+    : _DL_SECTIONS;
+
+  for (const [field] of sections) {
+    const rows = man[field] || [];
+    if (!rows.length) continue;
+    const gi = _dlRows.length;                       // first row index of this group
+    html += `<div class="dl-group" data-group="${field}">
+      <div class="dl-group-head">
+        <span class="dl-group-title">${t('dl.sec.' + field)} · ${rows.length}</span>
+        <button class="dl-selall" onclick="toggleGroup('${field}')" data-i18n="dl.selectAll">${t('dl.selectAll')}</button>
+      </div>`;
+    for (const r of rows) {
+      const idx = _dlRows.push(r) - 1;
+      const notOwned = (r.category === 'dlc' && r.owned === false);
+      const heavy = (r.heavy || notOwned) ? ' heavy' : '';
+      const badge = notOwned ? `<span class="dl-badge" style="background:#8a5a5a">${t('dl.badge.notOwned')}</span>`
+                  : r.heavy  ? `<span class="dl-badge">${t('dl.badge.old')}</span>`
+                  : (r.group ? `<span class="dl-badge">${t('dl.badge.pack')}</span>` : '');
+      const flag = _langFlag(r);
+      html += `<div class="dl-row${heavy}" data-gi="${field}">
+        <input type="checkbox" id="dlc${idx}" ${r.default ? 'checked' : ''} ${notOwned ? 'disabled' : ''} onchange="recomputeDlSum()">
+        <div class="dl-main">
+          <div class="dl-name">${esc(r.name || r.key)}${flag ? `<span class="dl-flag" title="${esc(r.lang_full||r.lang||'')}">${flag}</span>` : ''}${badge}${(r.md5||r.checksum)?'<span class="dl-mono">MD5</span>':''}${r.version?`<span class="dl-mono">GOG·${esc(r.version)}</span>`:''}</div>
+          <div class="dl-meta">${esc(_dlRowMeta(r))}</div>
+        </div>
+        <div class="dl-size">${formatSize(r.size || 0)}</div>
+      </div>`;
+    }
+    html += '</div>';
+  }
+  if (!_dlRows.length && _dlMode !== 'install')
+    html = `<div class="dl-empty">${t('dl.empty')}</div>`;
+  else if (!_dlRows.length)
+    html += `<div class="dl-empty">${t('dl.emptyInstall')}</div>`;
+  document.getElementById('dlBody').innerHTML = html;
+  recomputeDlSum();
+
+  document.getElementById('dlGo').onclick = submitDownload;
+}
+
+/* Select-all / deselect-all within one category group. */
+function toggleGroup(field) {
+  const boxes = Array.from(
+    document.querySelectorAll(`.dl-row[data-gi="${field}"] input[type=checkbox]`)
+  ).filter(b => !b.disabled);
+  if (!boxes.length) return;
+  const anyOff = boxes.some(b => !b.checked);   // any unchecked → check all, else clear
+  boxes.forEach(b => { b.checked = anyOff; });
+  recomputeDlSum();
+}
+
+/* "Recommended" preset: reset every checkbox to the backend's default flag. */
+function applyRecommended() {
+  _dlRows.forEach((r, i) => {
+    const b = document.getElementById('dlc' + i);
+    if (b && !b.disabled) b.checked = !!r.default;
+  });
+  recomputeDlSum();
+}
+
+/* Global select-all / clear across every group. */
+function selectAllRows(on) {
+  document.querySelectorAll('.dl-row input[type=checkbox]').forEach(b => {
+    if (!b.disabled) b.checked = !!on;
+  });
+  recomputeDlSum();
+}
+
+function _selectedDlKeys() {
+  const keys = [];
+  _dlRows.forEach((r, i) => {
+    const cb = document.getElementById('dlc' + i);
+    if (cb && cb.checked) keys.push(r.key);
+  });
+  return keys;
+}
+
+function recomputeDlSum() {
+  let bytes = 0, n = 0;
+  _dlRows.forEach((r, i) => {
+    const cb = document.getElementById('dlc' + i);
+    if (cb && cb.checked) { bytes += (r.size || 0); n++; }
+  });
+  document.getElementById('dlSum').textContent = formatSize(bytes);
+  document.getElementById('dlCount').textContent = n ? `(${n} poz.)` : '';
+  const go = document.getElementById('dlGo');
+  if (go) go.disabled = (n === 0 && _dlMode !== 'install');   // depot install allows 0 extras
+}
+
+function closeDownloadModal() {
+  document.getElementById('downloadModal').style.display = 'none';
+  _dlRows = []; _dlGame = null; _dlMode = 'download';
+}
+
+function submitDownload() {
+  const keys = _selectedDlKeys();
+  const g    = _dlGame;
+  const mode = _dlMode;
+  if (!g) return;
+  if (mode !== 'install' && !keys.length) return;
+  closeDownloadModal();
+  if (mode === 'install')
+    runCmd(() => call('install_game', String(g.id), keys), refreshAll, `instalacja: ${g.title}…`);
+  else
+    runCmd(() => call('start_download', String(g.id), keys), refreshAll, `pobieranie: ${g.title}…`);
+}
+
+/* ════════════════════════════════════════
+   LANGUAGE BUTTONS
+════════════════════════════════════════ */
+function syncLangButtons() {
+  ['lang-pl','wiz-lang-pl'].forEach(id => {
+    const b = document.getElementById(id); if (b) b.classList.toggle('active', LANG === 'pl');
+  });
+  ['lang-en','wiz-lang-en'].forEach(id => {
+    const b = document.getElementById(id); if (b) b.classList.toggle('active', LANG === 'en');
+  });
+}
+
+/* ════════════════════════════════════════
+   ONBOARDING WIZARD
+════════════════════════════════════════ */
+const WIZ_STEPS = ['welcome', 'dirs', 'login', 'sync'];
+let wizStep = 0, _wizSynced = false;
+
+async function startWizard() {
+  _wizDirs();                         // refresh known dirs from cfg
+  wizStep = 0; _wizSynced = false;
+  document.getElementById('wizard').style.display = 'flex';
+  syncLangButtons();
+  await renderWizard();
+}
+
+let _wd = { json_dir: '', install_dir: '', games_dir: '' };
+function _wizDirs() {
+  _wd = {
+    json_dir:    cfg.json_dir    || '',
+    install_dir: cfg.install_dir || '',
+    games_dir:   cfg.games_dir   || '',
+  };
+}
+
+function renderWizDots() {
+  document.getElementById('wizDots').innerHTML = WIZ_STEPS.map((_, i) =>
+    `<div class="wiz-dot ${i < wizStep ? 'done' : (i === wizStep ? 'active' : '')}"></div>`
+  ).join('');
+}
+
+async function renderWizard() {
+  renderWizDots();
+  const body = document.getElementById('wizBody');
+  const step = WIZ_STEPS[wizStep];
+  document.getElementById('wizBack').style.visibility = (wizStep === 0) ? 'hidden' : 'visible';
+  document.getElementById('wizNext').textContent =
+    (wizStep === WIZ_STEPS.length - 1) ? t('wiz.finish') : t('wiz.next');
+
+  if (step === 'welcome') {
+    body.innerHTML =
+      `<h2 class="wiz-h">${t('wiz.welcome.title')}</h2>
+       <p class="wiz-sub">${t('wiz.welcome.sub')}</p>
+       <div class="wiz-note">
+         <p>📁 <b>${t('wiz.dirs.json')}</b></p>
+         <p>📂 <b>${t('wiz.dirs.install')}</b></p>
+         <p>🎮 <b>${t('wiz.dirs.games')}</b></p>
+       </div>`;
+  } else if (step === 'dirs') {
+    const row = (labelKey, val, fn) => `
+      <div class="wiz-dir">
+        <div class="wiz-dir-label">${t(labelKey)}</div>
+        <div class="wiz-dir-row">
+          <div class="wiz-dir-val ${val ? '' : 'empty'}" title="${esc(val)}">${esc(val || t('wiz.dirs.notset'))}</div>
+          <button class="btn" onclick="wizChooseDir('${fn}')">${t('wiz.dirs.choose')}</button>
+        </div>
+      </div>`;
+    body.innerHTML =
+      `<h2 class="wiz-h">${t('wiz.dirs.title')}</h2>
+       <p class="wiz-sub">${t('wiz.dirs.sub')}</p>
+       ${row('wiz.dirs.json',    _wd.json_dir,    'json')}
+       ${row('wiz.dirs.install', _wd.install_dir, 'install')}
+       ${row('wiz.dirs.games',   _wd.games_dir,   'games')}`;
+  } else if (step === 'login') {
+    let logged = false;
+    try { logged = !!(await call('gog_login_status')).logged_in; } catch (e) {}
+    body.innerHTML =
+      `<h2 class="wiz-h">${t('wiz.login.title')}</h2>
+       <p class="wiz-sub">${t('wiz.login.sub')}</p>
+       <div class="wiz-big-status ${logged ? 'ok' : ''}" id="wizLoginStatus">
+         ${logged ? t('wiz.login.status.in') : t('wiz.login.status.out')}
+       </div>
+       ${logged ? '' : `<button class="btn primary" onclick="wizLogin()">${t('wiz.login.btn')}</button>`}
+       <p class="wiz-note" style="margin-top:14px">${t('wiz.login.skip')}</p>`;
+  } else if (step === 'sync') {
+    body.innerHTML =
+      `<h2 class="wiz-h">${t('wiz.sync.title')}</h2>
+       <p class="wiz-sub">${t('wiz.sync.sub')}</p>
+       <button class="btn primary" id="wizSyncBtn" onclick="wizSync()">${t('wiz.sync.btn')}</button>
+       <div class="wiz-note" id="wizSyncMsg" style="margin-top:14px">${t('wiz.sync.later')}</div>`;
+  }
+}
+
+async function wizChooseDir(which) {
+  const map = { json: 'choose_json_dir', install: 'choose_install_dir', games: 'choose_games_dir' };
+  const r = await call(map[which]);
+  if (r && r.ok) {
+    if (which === 'json')    { cfg.json_dir    = r.json_dir; }
+    if (which === 'install') { cfg.install_dir = r.install_dir; }
+    if (which === 'games')   { cfg.games_dir   = r.games_dir; }
+    _wizDirs();
+    updateCfg();
+    await renderWizard();
+  }
+}
+
+async function wizLogin() {
+  openGogLogin();
+  // Re-render the login step when the user returns, so the status refreshes.
+  const iv = setInterval(async () => {
+    if (document.getElementById('gogModal').style.display === 'none') {
+      clearInterval(iv);
+      if (WIZ_STEPS[wizStep] === 'login') await renderWizard();
+    }
+  }, 800);
+}
+
+function wizSync() {
+  const msg = document.getElementById('wizSyncMsg');
+  const btn = document.getElementById('wizSyncBtn');
+  if (btn) btn.disabled = true;
+  if (msg) msg.textContent = t('wiz.sync.running');
+  // Close the wizard and let the normal activity panel show progress.
+  finishWizard(true);
+  runCmd(() => call('sync_json_all'), refreshAll, t('wiz.sync.running'));
+}
+
+async function wizGo(dir) {
+  const nextStep = wizStep + dir;
+  if (nextStep < 0) return;
+  if (nextStep >= WIZ_STEPS.length) { finishWizard(true); return; }
+  wizStep = nextStep;
+  await renderWizard();
+}
+
+function wizSkip() { finishWizard(true); }
+
+async function finishWizard(markDone) {
+  document.getElementById('wizard').style.display = 'none';
+  if (markDone) { try { await call('mark_onboarded'); } catch (e) {} }
+}
+
+/* ════════════════════════════════════════
+   BOOT
+════════════════════════════════════════ */
+async function boot() {
+  try {
+    // Load settings first: appearance + language, before any rendering.
+    const settings = await call('get_settings');
+    applySettings(settings);
+    LANG = (settings.lang === 'en') ? 'en' : 'pl';
+    applyI18n();
+    syncLangButtons();
+
+    cfg   = await call('build_index');
+    updateCfg();
+    games = await call('get_games');
+
+    // First-run onboarding: show the wizard unless the user is already set up.
+    let onb = null;
+    try { onb = await call('get_onboarding_state'); } catch (e) {}
+    if (onb && !onb.configured) {
+      await startWizard();
+    }
+
+    if (!games.length) {
+      document.getElementById('game-view').innerHTML =
+        `<div style="padding:28px" class="small">${t('boot.noGames')}</div>`;
+      return;
+    }
+
+    sel = games[0].id;
+    renderList();
+    renderMain();
+    refreshGogStatus();   // reflect login state in the top bar
+  } catch(e) {
+    document.getElementById('game-view').innerHTML =
+      `<div style="padding:28px;color:var(--err)">${t('boot.initError')} ${esc(String(e))}</div>`;
+    console.error('boot error', e);
+  }
+}
+
+window.addEventListener('pywebviewready', boot);
+</script>
+</body>
+</html>
