@@ -76,5 +76,5 @@ exe = EXE(
     runtime_tmpdir=None,
     console=False,              # GUI app (no console window)
     disable_windowed_traceback=False,
-    icon=None,                  # set to 'assets/app.ico' if you add one
+    icon='assets/icon.ico',
 )
