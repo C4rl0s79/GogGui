@@ -4,6 +4,16 @@ Wszystkie istotne zmiany w projekcie **GOG Library Manager** (gogv2).
 Format oparty na [Keep a Changelog](https://keepachangelog.com/pl/1.1.0/),
 wersjonowanie wg [SemVer](https://semver.org/lang/pl/).
 
+## [1.1.2] - 2026-08-30
+
+### Dodano
+- **Sortowanie „Data zakupu"** — jak opcja „by purchase date" na stronie GOG.
+  Kolejność pobierana z `getFilteredProducts?sortBy=date_purchased` (stronicowana,
+  od najświeższego zakupu) i zapisywana jako ranga per gra (`purchase_order.json`).
+  Nowa opcja w dropdownie sortowania (badge `#N` = pozycja zakupu) oraz przycisk
+  **„🛒 Pobierz daty zakupu"** w Ustawieniach → Zaawansowane (bez pełnej
+  synchronizacji). Gry bez pobranej rangi lądują na końcu.
+
 ## [1.1.1] - 2026-08-30
 
 ### Naprawiono

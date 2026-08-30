@@ -22,7 +22,7 @@ def _base_dirs():
     return app, res
 
 
-APP_VERSION = "1.1.1"      # see CHANGELOG.md
+APP_VERSION = "1.1.2"      # see CHANGELOG.md
 
 APP_DIR, RESOURCE_DIR = _base_dirs()
 # Portable app state — ALWAYS inside the program directory (next to the exe):
@@ -969,6 +969,7 @@ def get_games() -> list:
     """Return all games enriched with live downloaded/installed status."""
     installed  = scan_installed_games()   # one directory scan
     downloaded = scan_downloaded_games()  # one directory scan
+    pranks     = _load_purchase_ranks()   # {product_id: rank} — „by purchase date"
     result = []
     for g in scan_games():
         dl = _check_downloaded_for_game(g, downloaded)
@@ -991,6 +992,7 @@ def get_games() -> list:
             # ── live status ──────────────────────────────────────
             "installed":       g["id"] in installed,
             "installed_path":  installed.get(g["id"]),
+            "purchase_rank":   pranks.get(g["id"]),
             "downloaded":      dl["downloaded"],
             "installer_path":  dl["installer_path"],
             "installer_files": dl["installer_files"],
@@ -1382,6 +1384,84 @@ def _get_owned_product_ids() -> list:
         else:
             raise
     return [str(i) for i in (data.get("owned") or [])]
+
+
+# ── Kolejność zakupów („by purchase date" jak na stronie GOG) ───────────────────
+GOG_FILTERED_API = "https://embed.gog.com/account/getFilteredProducts"
+PURCHASE_FILE    = CACHE / "purchase_order.json"
+
+
+def _gog_get_json_auth(url: str) -> dict:
+    """Authed GET z jednym automatycznym odświeżeniem tokenu na 401/403."""
+    tokens  = _read_galaxy_tokens()
+    access  = tokens.get("access_token")
+    refresh = tokens.get("refresh_token")
+    if not access:
+        raise RuntimeError("brak access_token w galaxy_tokens.json")
+    try:
+        return _gog_get_json(url, access)
+    except urllib.error.HTTPError as exc:
+        if exc.code in (401, 403) and refresh:
+            new = _refresh_access_token(refresh)
+            access = new.get("access_token")
+            if not access:
+                raise RuntimeError("odświeżenie tokenu nie zwróciło access_token")
+            for k in ("access_token", "refresh_token", "expires_in", "expires_at",
+                      "session_id", "token_type", "scope", "user_id"):
+                if k in new:
+                    tokens[k] = new[k]
+            _write_galaxy_tokens(tokens)
+            return _gog_get_json(url, access)
+        raise
+
+
+def _fetch_purchase_ranks() -> dict:
+    """Kolejność zakupów jak „by purchase date" na stronie GOG: przechodzi
+    getFilteredProducts?sortBy=date_purchased (od najświeższego zakupu) i nadaje
+    każdemu product_id rangę (0 = kupione najświeżej). {product_id: rank}."""
+    ranks: dict = {}
+    rank, page, pages = 0, 1, 1
+    while page <= pages and page <= 200:          # twardy limit stron (bezpiecznik)
+        data  = _gog_get_json_auth(f"{GOG_FILTERED_API}?mediaType=1"
+                                   f"&sortBy=date_purchased&page={page}")
+        pages = int(data.get("totalPages") or 1)
+        for p in (data.get("products") or []):
+            pid = str(p.get("id") or "").strip()
+            if pid and pid not in ranks:
+                ranks[pid] = rank
+                rank += 1
+        page += 1
+    return ranks
+
+
+def _load_purchase_ranks() -> dict:
+    try:
+        return json.loads(PURCHASE_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def _refresh_purchase_worker() -> bool:
+    _push_log("Pobieram kolejność zakupów z GOG…")
+    try:
+        ranks = _fetch_purchase_ranks()
+    except Exception as exc:
+        _push_log(f"✗ Nie udało się pobrać dat zakupu: {exc}")
+        return False
+    if not ranks:
+        _push_log("⚠ GOG nie zwrócił kolejności zakupów (pusta lista).")
+        return False
+    try:
+        PURCHASE_FILE.write_text(json.dumps(ranks), encoding="utf-8")
+    except Exception as exc:
+        _push_log(f"✗ Zapis dat zakupu: {exc}")
+        return False
+    _push_log(f"✓ Kolejność zakupów zapisana: {len(ranks)} gier.")
+    return True
+
+
+def refresh_purchase_dates() -> dict:
+    return _run_python_task(lambda: _refresh_purchase_worker(), "PURCHASE")
 
 
 def _fetch_product(product_id: str) -> dict | None:
@@ -3836,6 +3916,7 @@ class Api:
     def open_folder(self, path):                return open_folder(path)
     def kill_command(self):                     return kill_command()
     def refresh_ratings(self):                  return refresh_ratings()
+    def refresh_purchase_dates(self):           return refresh_purchase_dates()
     def get_queue(self):                        return get_queue()
     def cancel_queued(self, item_id):           return cancel_queued(item_id)
     def clear_queue(self):                      return clear_queue()

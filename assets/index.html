@@ -838,6 +838,7 @@ main { height: 100%; overflow: hidden; display: flex; flex-direction: column; mi
         <option value="title"   data-i18n="sort.title">Alfabetycznie</option>
         <option value="release" data-i18n="sort.release">Data wydania</option>
         <option value="rating"  data-i18n="sort.rating">Ocena GOG</option>
+        <option value="purchase" data-i18n="sort.purchase">Data zakupu</option>
         <option value="size"    data-i18n="sort.size">Rozmiar (pobrane)</option>
         <option value="status"  data-i18n="sort.status">Status</option>
       </select>
@@ -1032,6 +1033,8 @@ main { height: 100%; overflow: hidden; display: flex; flex-direction: column; mi
           <h2 data-i18n="set.tab.advanced">Zaawansowane</h2>
           <button class="btn" onclick="fetchRatings()" data-i18n="set.fetchRatings" data-cmd>⭐ Pobierz oceny GOG</button>
           <div class="wiz-note" style="margin:6px 0 14px" data-i18n="set.fetchRatingsNote">Pobiera oceny użytkowników GOG (0–5) dla sortowania „Ocena GOG" — bez pełnej synchronizacji. Nowe oceny dochodzą też przy zwykłej synchronizacji biblioteki.</div>
+          <button class="btn" onclick="fetchPurchaseDates()" data-i18n="set.fetchPurchase" data-cmd>🛒 Pobierz daty zakupu</button>
+          <div class="wiz-note" style="margin:6px 0 14px" data-i18n="set.fetchPurchaseNote">Pobiera kolejność zakupów z GOG (jak „by purchase date" na stronie) dla sortowania „Data zakupu".</div>
           <button class="btn" onclick="resetSettings()" data-i18n="set.reset">Przywróć domyślne (wygląd)</button>
         </div>
 
@@ -1173,7 +1176,7 @@ const I18N = {
     'tb.sync':'Synchronizuj bibliotekę','tb.updateAll':'Aktualizuj wszystko','tb.log':'Dziennik','tb.settings':'Ustawienia',
     'tb.notLoggedIn':'Nie zalogowano','tb.loggedIn':'Zalogowano',
     'filter.all':'Wszystkie','filter.installed':'Zainstalowane','filter.downloaded':'Pobrane',
-    'sort.title':'Alfabetycznie','sort.size':'Rozmiar (pobrane)','sort.year':'Rok wydania','sort.release':'Data wydania','sort.rating':'Ocena GOG','sort.status':'Status',
+    'sort.title':'Alfabetycznie','sort.size':'Rozmiar (pobrane)','sort.year':'Rok wydania','sort.release':'Data wydania','sort.rating':'Ocena GOG','sort.purchase':'Data zakupu','sort.status':'Status',
     'sb.idle':'Bezczynny','sb.busy':'Zajęty','sb.noTasks':'Brak aktywnych zadań. Rozpocznij pobieranie z widoku gry.',
     'sb.details':'Szczegóły','sb.games':'{n} gier w bibliotece',
     'palette.ph':'Szukaj gry lub akcji…','palette.games':'Gry','palette.actions':'Akcje','palette.noResults':'Brak wyników',
@@ -1215,7 +1218,7 @@ const I18N = {
     'set.language':'Język / Language','set.account':'Konto GOG','set.checking':'Sprawdzanie…',
     'set.login':'Zaloguj','set.reLogin':'Zaloguj ponownie','set.loggedIn':'✓ Zalogowano',
     'set.notLoggedIn':'Niezalogowano','set.save':'Zapisz','set.preview':'Podgląd',
-    'set.reset':'Domyślne','set.close':'✕','set.fetchRatings':'⭐ Pobierz oceny GOG','set.fetchRatingsNote':'Pobiera oceny użytkowników GOG (0–5) dla sortowania „Ocena GOG" — bez pełnej synchronizacji.',
+    'set.reset':'Domyślne','set.close':'✕','set.fetchRatings':'⭐ Pobierz oceny GOG','set.fetchRatingsNote':'Pobiera oceny użytkowników GOG (0–5) dla sortowania „Ocena GOG" — bez pełnej synchronizacji.','set.fetchPurchase':'🛒 Pobierz daty zakupu','set.fetchPurchaseNote':'Pobiera kolejność zakupów z GOG (jak „by purchase date" na stronie) dla sortowania „Data zakupu".',
     'dl.titleDownload':'Pobierz','dl.titleInstall':'⚡ Instaluj (depot)','dl.loading':'Wczytywanie listy plików z GOG…',
     'dl.goDownload':'⬇ Pobierz zaznaczone','dl.goInstall':'⚡ Instaluj','dl.cancel':'✕ Anuluj',
     'dl.selected':'Zaznaczono','dl.items':'({n} poz.)','dl.recommended':'✨ Zalecane','dl.selectAll':'Zaznacz wszystko',
@@ -1246,7 +1249,7 @@ const I18N = {
     'tb.sync':'Sync library','tb.updateAll':'Update all','tb.log':'Log','tb.settings':'Settings',
     'tb.notLoggedIn':'Not logged in','tb.loggedIn':'Logged in',
     'filter.all':'All','filter.installed':'Installed','filter.downloaded':'Downloaded',
-    'sort.title':'Alphabetical','sort.size':'Size (downloaded)','sort.year':'Release year','sort.release':'Release date','sort.rating':'GOG rating','sort.status':'Status',
+    'sort.title':'Alphabetical','sort.size':'Size (downloaded)','sort.year':'Release year','sort.release':'Release date','sort.rating':'GOG rating','sort.purchase':'Purchase date','sort.status':'Status',
     'sb.idle':'Idle','sb.busy':'Busy','sb.noTasks':'No active tasks. Start a download from the game view.',
     'sb.details':'Details','sb.games':'{n} games in library',
     'palette.ph':'Search game or action…','palette.games':'Games','palette.actions':'Actions','palette.noResults':'No results',
@@ -1288,7 +1291,7 @@ const I18N = {
     'set.language':'Język / Language','set.account':'GOG account','set.checking':'Checking…',
     'set.login':'Log in','set.reLogin':'Log in again','set.loggedIn':'✓ Logged in',
     'set.notLoggedIn':'Not logged in','set.save':'Save','set.preview':'Preview',
-    'set.reset':'Defaults','set.close':'✕','set.fetchRatings':'⭐ Fetch GOG ratings','set.fetchRatingsNote':'Fetches GOG user ratings (0–5) for the "GOG rating" sort — without a full sync.',
+    'set.reset':'Defaults','set.close':'✕','set.fetchRatings':'⭐ Fetch GOG ratings','set.fetchRatingsNote':'Fetches GOG user ratings (0–5) for the "GOG rating" sort — without a full sync.','set.fetchPurchase':'🛒 Fetch purchase dates','set.fetchPurchaseNote':'Fetches your GOG purchase order (like the site\\'s "by purchase date") for the "Purchase date" sort.',
     'dl.titleDownload':'Download','dl.titleInstall':'⚡ Install (depot)','dl.loading':'Loading file list from GOG…',
     'dl.goDownload':'⬇ Download selected','dl.goInstall':'⚡ Install','dl.cancel':'✕ Cancel',
     'dl.selected':'Selected','dl.items':'({n} items)','dl.recommended':'✨ Recommended','dl.selectAll':'Select all',
@@ -1829,6 +1832,10 @@ function fetchRatings() {
   closeSettings?.();
   runCmd(() => call('refresh_ratings'), refreshAll, t('set.fetchRatings'));
 }
+function fetchPurchaseDates() {
+  closeSettings?.();
+  runCmd(() => call('refresh_purchase_dates'), refreshAll, t('set.fetchPurchase'));
+}
 
 async function resetSettings() {
   const disk = await call('get_settings');
@@ -2206,6 +2213,7 @@ function setSort(mode) {
 const _dlSize = g => (g.installer_size || 0) + (g.extras_size || 0);
 const _relTs  = g => Date.parse((g.release_date || (g.product && g.product.release_date) || '')) || 0;
 const _rating = g => (typeof g.rating === 'number' ? g.rating : -1);
+const _purch  = g => (typeof g.purchase_rank === 'number' ? g.purchase_rank : Infinity);
 
 function _filteredGames() {
   const q = document.getElementById('q').value.toLowerCase();
@@ -2220,6 +2228,7 @@ function _filteredGames() {
     if (sortMode === 'size')    return _dlSize(b) - _dlSize(a) || byTitle(a, b);
     if (sortMode === 'release') return _relTs(b)  - _relTs(a)  || byTitle(a, b);
     if (sortMode === 'rating')  return _rating(b) - _rating(a) || byTitle(a, b);
+    if (sortMode === 'purchase') return _purch(a) - _purch(b)  || byTitle(a, b);
     if (sortMode === 'status')  return (b.installed - a.installed)
                                     || (b.downloaded - a.downloaded) || byTitle(a, b);
     return byTitle(a, b);
@@ -2231,6 +2240,7 @@ function _sortBadge(g) {
   if (sortMode === 'size')    { const s = _dlSize(g); return s ? formatSize(s) : ''; }
   if (sortMode === 'release') { const d = (g.release_date || (g.product && g.product.release_date) || ''); return d ? String(d).slice(0, 10) : ''; }
   if (sortMode === 'rating')  return (typeof g.rating === 'number') ? ('★ ' + g.rating.toFixed(1)) : '';
+  if (sortMode === 'purchase') return (typeof g.purchase_rank === 'number') ? ('#' + (g.purchase_rank + 1)) : '';
   return '';
 }
 function renderList() {
