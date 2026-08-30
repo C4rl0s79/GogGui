@@ -89,6 +89,13 @@ _is_running = False
 _proc_lock  = threading.Lock()
 _cancel     = threading.Event()   # set by kill_command to stop pure-Python downloads
 
+# Sequential task queue (downloads / installs). While one job runs, further
+# queueable jobs wait here and start automatically when the current one ends.
+from collections import deque
+_task_queue: deque = deque()      # items: {"id", "label", "target"}
+_task_seq   = 0
+_current_label = ""
+
 # Strip all ANSI escape sequences from raw bytes
 _RE_ANSI     = re.compile(rb'\x1b\[[0-9;]*[A-Za-z]')
 
@@ -406,16 +413,21 @@ def _lib_put(slug: str, product: dict, details: dict | None = None,
 
 
 def _lib_put_many(items: list) -> int:
-    """Bulk insert [(slug, product), …] with a single pack rewrite (fast sync)."""
+    """Bulk insert [(slug, product[, rating]), …] with one pack rewrite (fast
+    sync). `rating` (optional) is GOG's {value, count} kept on the entry."""
     lib = _lib_load()
     with _LIB_LOCK:
         n = 0
-        for slug, product in items:
+        for item in items:
+            slug, product = item[0], item[1]
+            rating = item[2] if len(item) > 2 else None
             s = product.get("slug") or slug
             entry = lib.get(s) or {}
             entry["product"] = product
             entry.setdefault("details", {})
             entry["key"] = entry.get("key") or s
+            if rating is not None:
+                entry["rating"] = rating
             lib[s] = entry
             n += 1
         _lib_save(lib)
@@ -914,6 +926,8 @@ def scan_games() -> list:
                 prod.get("images", {}).get("background") or det.get("backgroundImage")
             ),
             "release_date": prod.get("release_date"),
+            "rating":       (entry.get("rating") or {}).get("value"),
+            "rating_count": (entry.get("rating") or {}).get("count"),
             "installable":  bool(prod.get("is_installable", False)),
             "platforms":    [k for k, v in (prod.get("content_system_compatibility") or {}).items() if v],
             "languages":    list((prod.get("languages") or {}).values()),
@@ -960,6 +974,9 @@ def get_games() -> list:
             "platforms":    g["platforms"],
             "languages":    g["languages"],
             "installable":  g["installable"],
+            "release_date": g["release_date"],
+            "rating":       g["rating"],
+            "rating_count": g["rating_count"],
             "product":      g["product"],
             "details":      g["details"],
             # ── live status ──────────────────────────────────────
@@ -987,36 +1004,110 @@ def _hidden_startupinfo():
     return None
 
 
-def _run_python_task(target, label: str) -> dict:
-    """Run a pure-Python job in a background thread, mirroring _run_cmd_stream:
-    guards _is_running, streams log/completion events, and finally calls the JS
-    onCommandFinished hook so refreshAll() runs."""
-    global _is_running
-    with _proc_lock:
-        if _is_running:
-            return {"ok": False, "error": "Inne polecenie jest już uruchomione."}
-        _is_running = True
+def _emit_queue() -> None:
+    """Push the current queue + running label to the UI."""
+    try:
+        items = [{"id": it["id"], "label": it["label"]} for it in list(_task_queue)]
+    except Exception:
+        items = []
+    _send_js({"type": "queue", "items": items,
+              "running": _current_label if _is_running else ""})
+
+
+def _js_command_finished(ok: bool) -> None:
+    try:
+        webview.windows[0].evaluate_js(
+            f"window.onCommandFinished?.({json.dumps({'ok': ok, 'rc': 0 if ok else 1})})"
+        )
+    except Exception as exc:
+        log(f"[onCommandFinished error] {exc}")
+
+
+def _run_thread(target, label: str) -> None:
+    """Start `target` on a background thread. When it ends, automatically pull the
+    next queued job (if any) and run it too — a sequential pipeline."""
+    global _is_running, _current_label
+    _current_label = label or ""
     _cancel.clear()
+    _send_js({"type": "task_started", "label": _current_label})
+    _emit_queue()
 
     def worker() -> None:
-        global _is_running
+        global _is_running, _current_label
         ok = False
         try:
             ok = bool(target())
         except Exception as exc:
             _push_log(f"✗ Wyjątek: {exc}")
         finally:
+            nxt = None
             with _proc_lock:
-                _is_running = False
-            try:
-                webview.windows[0].evaluate_js(
-                    f"window.onCommandFinished?.({json.dumps({'ok': ok, 'rc': 0 if ok else 1})})"
-                )
-            except Exception as exc2:
-                log(f"[onCommandFinished error] {exc2}")
+                if _task_queue:
+                    nxt = _task_queue.popleft()
+                else:
+                    _is_running = False
+                    _current_label = ""
+            _js_command_finished(ok)
+            _emit_queue()
+            if nxt is not None:
+                _push_log(f"▶ Kolejka: „{nxt['label']}”…")
+                _run_thread(nxt["target"], nxt["label"])
 
     threading.Thread(target=worker, daemon=True).start()
+
+
+def _submit_task(target, label: str, queueable: bool = False) -> dict:
+    """Run `target` now if idle, otherwise reject — or, when `queueable`, append it
+    to the sequential queue and report its position."""
+    global _is_running, _task_seq
+    with _proc_lock:
+        if _is_running:
+            if queueable:
+                _task_seq += 1
+                item = {"id": _task_seq, "label": label, "target": target}
+                _task_queue.append(item)
+                pos = len(_task_queue)
+                _emit_queue()
+                return {"ok": True, "queued": True, "position": pos, "id": _task_seq}
+            return {"ok": False, "error": "Inne polecenie jest już uruchomione."}
+        _is_running = True
+    _run_thread(target, label)
     return {"ok": True, "started": True}
+
+
+def _run_python_task(target, label: str) -> dict:
+    """Non-queueable task (sync, update, …): runs now or is rejected if busy."""
+    return _submit_task(target, label, queueable=False)
+
+
+def get_queue() -> dict:
+    return {"ok": True,
+            "running": _current_label if _is_running else "",
+            "items": [{"id": it["id"], "label": it["label"]} for it in list(_task_queue)]}
+
+
+def cancel_queued(item_id) -> dict:
+    """Remove a *pending* queued job (not the one currently running)."""
+    try:
+        iid = int(item_id)
+    except Exception:
+        return {"ok": False, "error": "zła pozycja"}
+    with _proc_lock:
+        before = len(_task_queue)
+        remaining = [it for it in _task_queue if it["id"] != iid]
+        _task_queue.clear()
+        _task_queue.extend(remaining)
+        removed = before - len(_task_queue)
+    _emit_queue()
+    return {"ok": True, "removed": removed}
+
+
+def clear_queue() -> dict:
+    with _proc_lock:
+        n = len(_task_queue)
+        _task_queue.clear()
+    _emit_queue()
+    return {"ok": True, "removed": n}
 
 
 def _legacy_tokens() -> dict | None:
@@ -1297,6 +1388,23 @@ def _fetch_product(product_id: str) -> dict | None:
         return None
 
 
+def _fetch_gog_rating(product_id: str) -> dict | None:
+    """GOG's own verified-owner average rating for a product (0–5), e.g.
+    {"value": 4.4, "count": 3306}. Metacritic is not exposed by GOG's API, so
+    this is the available, first-party rating. Returns None on any error."""
+    url = f"https://reviews.gog.com/v1/products/{product_id}/averageRating?reviewer=verified_owner"
+    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+    try:
+        with urllib.request.urlopen(req, timeout=20) as resp:
+            data = json.loads(resp.read().decode("utf-8", "replace"))
+        val = data.get("value")
+        return {"value": round(float(val), 1), "count": int(data.get("count") or 0)} \
+            if val is not None else None
+    except Exception as exc:
+        log(f"rating fetch {product_id} :: {exc}")
+        return None
+
+
 def _write_product_json(slug: str, product: dict) -> None:
     """Store a product's JSON in the packed library (keyed by slug)."""
     _lib_put(product.get("slug") or slug, product)
@@ -1323,13 +1431,14 @@ def _sync_all_worker() -> bool:
 
     def handle(pid: str) -> None:
         prod = _fetch_product(pid)
+        rating = _fetch_gog_rating(pid) if prod and prod.get("game_type") == "game" else None
         with lock:
             state["done"] += 1
             if prod is None:
                 state["missing"] += 1                      # 404: goodie pack / delisted
             elif prod.get("game_type") == "game":
                 slug = (prod.get("slug") or f"product_{pid}").strip()
-                collected.append((slug, prod))
+                collected.append((slug, prod, rating))
                 state["games"] += 1
                 _send_js({"type": "completion", "filename": slug, "speed": "JSON"})
             else:
@@ -1365,10 +1474,63 @@ def _sync_one_worker(game_id) -> bool:
     if not prod:
         _push_log("✗ Nie udało się pobrać danych z api.gog.com.")
         return False
-    _write_product_json(prod.get("slug") or slug, prod)
+    rating = _fetch_gog_rating(pid)
+    _lib_put_many([(prod.get("slug") or slug, prod, rating)])
     _send_js({"type": "completion", "filename": slug, "speed": "JSON"})
     _push_log("✓ Zapisano.")
     return True
+
+
+def _refresh_ratings_worker(only_missing: bool = True) -> bool:
+    """Fetch GOG's own user rating for library games (no product re-fetch), so
+    ratings can be populated quickly without a full sync."""
+    lib = _lib_all()
+    targets = []
+    for slug, entry in lib.items():
+        prod = entry.get("product") or {}
+        pid  = str(prod.get("id") or "").strip()
+        if not pid:
+            continue
+        if only_missing and (entry.get("rating") or {}).get("value") is not None:
+            continue
+        targets.append((slug, pid))
+
+    if not targets:
+        _push_log("Wszystkie gry mają już ocenę GOG.")
+        return True
+
+    _push_log(f"Pobieram oceny GOG dla {len(targets)} gier…")
+    results = {}
+    state   = {"done": 0}
+    lock    = threading.Lock()
+
+    def handle(item):
+        slug, pid = item
+        if _cancel.is_set():
+            return
+        r = _fetch_gog_rating(pid)
+        with lock:
+            state["done"] += 1
+            if r:
+                results[slug] = r
+            if state["done"] % 50 == 0 or state["done"] == len(targets):
+                _push_log(f"… {state['done']}/{len(targets)}")
+
+    with ThreadPoolExecutor(max_workers=_GOG_FETCH_WORKERS) as ex:
+        list(ex.map(handle, targets))
+
+    lib = _lib_load()
+    with _LIB_LOCK:
+        for slug, r in results.items():
+            if slug in lib:
+                lib[slug]["rating"] = r
+        _lib_save(lib)
+    _push_log(f"✓ Oceny GOG zapisane: {len(results)}/{len(targets)}.")
+    return True
+
+
+def refresh_ratings() -> dict:
+    return _run_python_task(lambda: _refresh_ratings_worker(True), "RATINGS")
 
 
 def sync_json_all() -> dict:
@@ -2639,7 +2801,8 @@ def _depot_install_worker(game_id, extra_keys: list) -> bool:
 
 def install_game(game_id, extra_keys=None) -> dict:
     keys = extra_keys if isinstance(extra_keys, list) else []
-    return _run_python_task(lambda: _depot_install_worker(game_id, keys), "INSTALL")
+    return _submit_task(lambda: _depot_install_worker(game_id, keys),
+                        _task_label("Instalacja", game_id), queueable=True)
 
 
 # ── classic-installer updater (offline installers + extras, no depots) ─────────
@@ -3480,9 +3643,15 @@ def get_sgdb_override(game_id) -> dict:
     return {"ok": True, "sgdb_id": (g or {}).get("sgdb_id")}
 
 
+def _task_label(prefix: str, game_id) -> str:
+    g = next((x for x in scan_games() if x["id"] == str(game_id)), None)
+    return f"{prefix}: {g['title']}" if g else f"{prefix}: {game_id}"
+
+
 def start_download(game_id, selection_keys) -> dict:
     keys = selection_keys if isinstance(selection_keys, list) else []
-    return _run_python_task(lambda: _download_worker(game_id, keys), "DOWNLOAD")
+    return _submit_task(lambda: _download_worker(game_id, keys),
+                        _task_label("Pobieranie", game_id), queueable=True)
 
 
 def _folder_dialog():
@@ -3601,6 +3770,11 @@ def open_folder(path: str) -> dict:
 
 def kill_command() -> dict:
     _cancel.set()
+    # Stop means stop: drop everything still queued so the pipeline doesn't
+    # auto-continue after the current job is aborted.
+    with _proc_lock:
+        _task_queue.clear()
+    _emit_queue()
     with _proc_lock:
         proc = _current_proc
     if proc:
@@ -3652,6 +3826,10 @@ class Api:
     def delete_installed_game(self, game_id):   return delete_installed_game(game_id)
     def open_folder(self, path):                return open_folder(path)
     def kill_command(self):                     return kill_command()
+    def refresh_ratings(self):                  return refresh_ratings()
+    def get_queue(self):                        return get_queue()
+    def cancel_queued(self, item_id):           return cancel_queued(item_id)
+    def clear_queue(self):                      return clear_queue()
     def get_settings(self):                     return get_settings()
     def save_settings(self, settings):          return save_settings(settings)
 

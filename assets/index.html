@@ -187,7 +187,7 @@ main { height: 100%; overflow: hidden; display: flex; flex-direction: column; mi
 .item {
   width: 100%;
   display: grid;
-  grid-template-columns: 40px 1fr;
+  grid-template-columns: 40px 1fr auto;
   gap: 9px;
   align-items: center;
   padding: 7px 9px;
@@ -200,6 +200,13 @@ main { height: 100%; overflow: hidden; display: flex; flex-direction: column; mi
   font-size: var(--fs-list);
 }
 .item:hover, .item.active { background: var(--panel2); }
+.item-badge {
+  flex: 0 0 auto;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  padding-left: 6px;
+}
 .item-icon {
   width: 40px; height: 40px;
   border-radius: 9px;
@@ -455,6 +462,24 @@ main { height: 100%; overflow: hidden; display: flex; flex-direction: column; mi
 .act-status { color: var(--muted); font-size: 11px; }
 .act-spacer { flex: 1; }
 
+/* download / install queue strip */
+.queue-box {
+  flex: 0 0 auto; display: flex; flex-wrap: wrap; align-items: center; gap: 6px;
+  padding: 6px 14px; background: var(--panel); border-bottom: 1px solid var(--line);
+  font-size: 11px;
+}
+.queue-box .q-title { color: var(--muted); text-transform: uppercase; letter-spacing: .04em; font-weight: 700; }
+.queue-chip {
+  display: inline-flex; align-items: center; gap: 6px;
+  background: var(--panel2); border: 1px solid var(--line); border-radius: 999px;
+  padding: 2px 6px 2px 9px; max-width: 260px;
+}
+.queue-chip .q-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.queue-chip .q-x { cursor: pointer; color: var(--muted); font-weight: 700; padding: 0 2px; }
+.queue-chip .q-x:hover { color: var(--danger, #e5534b); }
+.queue-box .q-clear { margin-left: auto; cursor: pointer; color: var(--muted); }
+.queue-box .q-clear:hover { color: var(--text); }
+
 /* body = left (slots) + right (done list) */
 .act-body {
   flex: 1; min-height: 0;
@@ -694,6 +719,12 @@ main { height: 100%; overflow: hidden; display: flex; flex-direction: column; mi
 .sb-subbar { display: flex; align-items: center; justify-content: space-between; padding: 0 13px 6px; flex: 0 0 auto; }
 .sb-sort { background: transparent; border: none; color: var(--muted); font-size: 11px; cursor: pointer; font-family: inherit; display: flex; align-items: center; gap: 5px; }
 .sb-sort:hover { color: var(--text); }
+.sb-sort select {
+  background: var(--panel2); color: var(--text);
+  border: 1px solid var(--border, #2a3340); border-radius: 6px;
+  font-family: inherit; font-size: 11px; padding: 2px 6px; cursor: pointer;
+}
+.sb-sort select:focus { outline: none; border-color: var(--accent); }
 .sb-count { font-size: 11px; color: var(--muted); }
 
 /* ── tabbed settings ─────────────────────────────────────── */
@@ -802,9 +833,15 @@ main { height: 100%; overflow: hidden; display: flex; flex-direction: column; mi
     <button class="sb-tab"        data-filter="downloaded" onclick="setFilter('downloaded')" data-i18n="filter.downloaded">Pobrane</button>
   </div>
   <div class="sb-subbar">
-    <button class="sb-sort" id="sortBtn" onclick="cycleSort()">
-      <span>⇅</span> <span id="sortLabel" data-i18n="sort.title">Alfabetycznie</span>
-    </button>
+    <label class="sb-sort" for="sortSelect"><span>⇅</span>
+      <select id="sortSelect" onchange="setSort(this.value)">
+        <option value="title"   data-i18n="sort.title">Alfabetycznie</option>
+        <option value="release" data-i18n="sort.release">Data wydania</option>
+        <option value="rating"  data-i18n="sort.rating">Ocena GOG</option>
+        <option value="size"    data-i18n="sort.size">Rozmiar (pobrane)</option>
+        <option value="status"  data-i18n="sort.status">Status</option>
+      </select>
+    </label>
     <span class="sb-count" id="listCount"></span>
   </div>
   <div class="list" id="list"></div>
@@ -833,6 +870,7 @@ main { height: 100%; overflow: hidden; display: flex; flex-direction: column; mi
       <button class="btn-xs" onclick="clearActivity()" data-i18n="act.clear">Wyczyść</button>
       <button class="btn-xs" id="collapseBtn" onclick="togglePanel(false)">▼</button>
     </div>
+    <div id="queueBox" class="queue-box" style="display:none"></div>
     <div class="act-drag h-gutter" id="activityGutter" title="Przeciągnij, aby zmienić wysokość"></div>
     <div class="act-body">
       <!-- left: slot progress bars -->
@@ -992,6 +1030,8 @@ main { height: 100%; overflow: hidden; display: flex; flex-direction: column; mi
         <!-- ADVANCED -->
         <div class="set-panel" data-panel="advanced">
           <h2 data-i18n="set.tab.advanced">Zaawansowane</h2>
+          <button class="btn" onclick="fetchRatings()" data-i18n="set.fetchRatings" data-cmd>⭐ Pobierz oceny GOG</button>
+          <div class="wiz-note" style="margin:6px 0 14px" data-i18n="set.fetchRatingsNote">Pobiera oceny użytkowników GOG (0–5) dla sortowania „Ocena GOG" — bez pełnej synchronizacji. Nowe oceny dochodzą też przy zwykłej synchronizacji biblioteki.</div>
           <button class="btn" onclick="resetSettings()" data-i18n="set.reset">Przywróć domyślne (wygląd)</button>
         </div>
 
@@ -1133,7 +1173,7 @@ const I18N = {
     'tb.sync':'Synchronizuj bibliotekę','tb.updateAll':'Aktualizuj wszystko','tb.log':'Dziennik','tb.settings':'Ustawienia',
     'tb.notLoggedIn':'Nie zalogowano','tb.loggedIn':'Zalogowano',
     'filter.all':'Wszystkie','filter.installed':'Zainstalowane','filter.downloaded':'Pobrane',
-    'sort.title':'Alfabetycznie','sort.size':'Rozmiar','sort.year':'Rok wydania','sort.status':'Status',
+    'sort.title':'Alfabetycznie','sort.size':'Rozmiar (pobrane)','sort.year':'Rok wydania','sort.release':'Data wydania','sort.rating':'Ocena GOG','sort.status':'Status',
     'sb.idle':'Bezczynny','sb.busy':'Zajęty','sb.noTasks':'Brak aktywnych zadań. Rozpocznij pobieranie z widoku gry.',
     'sb.details':'Szczegóły','sb.games':'{n} gier w bibliotece',
     'palette.ph':'Szukaj gry lub akcji…','palette.games':'Gry','palette.actions':'Akcje','palette.noResults':'Brak wyników',
@@ -1159,7 +1199,7 @@ const I18N = {
     'btn.update':'⟳ Aktualizuj installery','btn.depotInstall':'⚡ Instaluj (depot)','btn.syncGame':'↻ JSON tej gry',
     'detail.description':'Opis','detail.noDescription':'Brak opisu.',
     'detail.screenshots':'Screenshoty','detail.noScreenshots':'Brak screenshotów.',
-    'detail.metadata':'Metadane','detail.releaseDate':'Data wydania','detail.installable':'Instalacja',
+    'detail.metadata':'Metadane','detail.releaseDate':'Data wydania','detail.rating':'Ocena GOG','detail.installable':'Instalacja',
     'detail.yes':'✓ Tak','detail.no':'✗ Nie','detail.languages':'Języki','detail.platforms':'Platformy',
     'detail.forum':'Forum','detail.support':'Support','detail.open':'otwórz →',
     'detail.installerFiles':'Pliki instalatora','detail.noData':'Brak danych. Pobierz JSON lub wybierz katalog.',
@@ -1175,7 +1215,7 @@ const I18N = {
     'set.language':'Język / Language','set.account':'Konto GOG','set.checking':'Sprawdzanie…',
     'set.login':'Zaloguj','set.reLogin':'Zaloguj ponownie','set.loggedIn':'✓ Zalogowano',
     'set.notLoggedIn':'Niezalogowano','set.save':'Zapisz','set.preview':'Podgląd',
-    'set.reset':'Domyślne','set.close':'✕',
+    'set.reset':'Domyślne','set.close':'✕','set.fetchRatings':'⭐ Pobierz oceny GOG','set.fetchRatingsNote':'Pobiera oceny użytkowników GOG (0–5) dla sortowania „Ocena GOG" — bez pełnej synchronizacji.',
     'dl.titleDownload':'Pobierz','dl.titleInstall':'⚡ Instaluj (depot)','dl.loading':'Wczytywanie listy plików z GOG…',
     'dl.goDownload':'⬇ Pobierz zaznaczone','dl.goInstall':'⚡ Instaluj','dl.cancel':'✕ Anuluj',
     'dl.selected':'Zaznaczono','dl.items':'({n} poz.)','dl.recommended':'✨ Zalecane','dl.selectAll':'Zaznacz wszystko',
@@ -1206,7 +1246,7 @@ const I18N = {
     'tb.sync':'Sync library','tb.updateAll':'Update all','tb.log':'Log','tb.settings':'Settings',
     'tb.notLoggedIn':'Not logged in','tb.loggedIn':'Logged in',
     'filter.all':'All','filter.installed':'Installed','filter.downloaded':'Downloaded',
-    'sort.title':'Alphabetical','sort.size':'Size','sort.year':'Release year','sort.status':'Status',
+    'sort.title':'Alphabetical','sort.size':'Size (downloaded)','sort.year':'Release year','sort.release':'Release date','sort.rating':'GOG rating','sort.status':'Status',
     'sb.idle':'Idle','sb.busy':'Busy','sb.noTasks':'No active tasks. Start a download from the game view.',
     'sb.details':'Details','sb.games':'{n} games in library',
     'palette.ph':'Search game or action…','palette.games':'Games','palette.actions':'Actions','palette.noResults':'No results',
@@ -1232,7 +1272,7 @@ const I18N = {
     'btn.update':'⟳ Update installers','btn.depotInstall':'⚡ Install (depot)','btn.syncGame':'↻ Sync this game',
     'detail.description':'Description','detail.noDescription':'No description.',
     'detail.screenshots':'Screenshots','detail.noScreenshots':'No screenshots.',
-    'detail.metadata':'Metadata','detail.releaseDate':'Release date','detail.installable':'Installable',
+    'detail.metadata':'Metadata','detail.releaseDate':'Release date','detail.rating':'GOG rating','detail.installable':'Installable',
     'detail.yes':'✓ Yes','detail.no':'✗ No','detail.languages':'Languages','detail.platforms':'Platforms',
     'detail.forum':'Forum','detail.support':'Support','detail.open':'open →',
     'detail.installerFiles':'Installer files','detail.noData':'No data. Fetch JSON or pick a folder.',
@@ -1248,7 +1288,7 @@ const I18N = {
     'set.language':'Język / Language','set.account':'GOG account','set.checking':'Checking…',
     'set.login':'Log in','set.reLogin':'Log in again','set.loggedIn':'✓ Logged in',
     'set.notLoggedIn':'Not logged in','set.save':'Save','set.preview':'Preview',
-    'set.reset':'Defaults','set.close':'✕',
+    'set.reset':'Defaults','set.close':'✕','set.fetchRatings':'⭐ Fetch GOG ratings','set.fetchRatingsNote':'Fetches GOG user ratings (0–5) for the "GOG rating" sort — without a full sync.',
     'dl.titleDownload':'Download','dl.titleInstall':'⚡ Install (depot)','dl.loading':'Loading file list from GOG…',
     'dl.goDownload':'⬇ Download selected','dl.goInstall':'⚡ Install','dl.cancel':'✕ Cancel',
     'dl.selected':'Selected','dl.items':'({n} items)','dl.recommended':'✨ Recommended','dl.selectAll':'Select all',
@@ -1355,8 +1395,31 @@ window.handleActivity = function(msg) {
     addCompletion(msg.filename || '', msg.speed || '');
   } else if (msg.type === 'log') {
     if (msg.text) addLogLine(msg.text);
+  } else if (msg.type === 'task_started') {
+    setRunning(true, msg.label || t('act.running'));
+  } else if (msg.type === 'queue') {
+    renderQueue(msg.items || []);
   }
 };
+
+function renderQueue(items) {
+  const box = document.getElementById('queueBox');
+  if (!box) return;
+  if (!items.length) { box.style.display = 'none'; box.innerHTML = ''; return; }
+  box.style.display = 'flex';
+  const title = (LANG === 'pl' ? 'W kolejce' : 'Queued');
+  const clr   = (LANG === 'pl' ? 'Wyczyść kolejkę' : 'Clear queue');
+  box.innerHTML =
+    `<span class="q-title">${title} (${items.length})</span>` +
+    items.map(it =>
+      `<span class="queue-chip"><span class="q-label">${esc(it.label)}</span>` +
+      `<span class="q-x" title="${LANG==='pl'?'Usuń z kolejki':'Remove'}" onclick="cancelQueued(${it.id})">✕</span></span>`
+    ).join('') +
+    `<span class="q-clear" onclick="clearQueue()">${clr}</span>`;
+}
+
+async function cancelQueued(id) { await call('cancel_queued', id); }
+async function clearQueue()     { await call('clear_queue'); }
 
 function ensurePanelOpen() { togglePanel(true); }
 
@@ -1471,8 +1534,10 @@ function setRunning(running, statusText) {
   if (status) status.textContent = statusText || (running ? t('act.running') : t('act.idle'));
   if (kill)   kill.style.display = running ? '' : 'none';
   document.querySelectorAll('[data-cmd]').forEach(b => b.disabled = running);
-  ['downloadBtn','reDownloadBtn','syncBtn','deleteInstallerBtn','deleteGameBtn','openGameBtn','openInstallerBtn',
-   'launchBtn','runInstallerBtn','depotInstallBtn']
+  // Keep download/install controls ENABLED while busy so the user can queue more
+  // (downloadBtn, reDownloadBtn, depotInstallBtn stay clickable → they enqueue).
+  ['syncBtn','deleteInstallerBtn','deleteGameBtn','openGameBtn','openInstallerBtn',
+   'launchBtn','runInstallerBtn','updateBtn']
     .forEach(id => { const b = document.getElementById(id); if (b) b.disabled = running; });
   _setStatusbar(running, statusText || (running ? null : (games.length ? t('sb.games', {n: games.length}) : t('sb.noTasks'))));
   if (running) togglePanel(true);
@@ -1480,21 +1545,15 @@ function setRunning(running, statusText) {
 
 window.onCommandFinished = async function(result) {
   const dot = document.getElementById('actDot');
-  if (result && result.ok === false) {
-    if (dot) dot.className = 'dot err';
-    setRunning(false, t('act.errCode', {rc: result.rc}));
-    toast(t('act.errCode', {rc: result.rc}), 'err');
-    _afterCmd = null;
-  } else {
-    if (dot) dot.className = 'dot ok';
-    setRunning(false, t('act.finished'));
-    toast(t('act.completed'), 'ok');
-    if (_afterCmd) {
-      try   { await _afterCmd(); }
-      catch (e) { console.error('afterCmd', e); }
-      _afterCmd = null;
-    }
-  }
+  const ok  = !(result && result.ok === false);
+  if (dot) dot.className = 'dot ' + (ok ? 'ok' : 'err');
+  setRunning(false, ok ? t('act.finished') : t('act.errCode', {rc: result.rc}));
+  toast(ok ? t('act.completed') : t('act.errCode', {rc: result.rc}), ok ? 'ok' : 'err');
+  // Always refresh after a task — queued tasks auto-start server-side and have no
+  // per-call afterFn, so fall back to refreshAll.
+  const after = _afterCmd; _afterCmd = null;
+  try   { await (after || refreshAll)(); }
+  catch (e) { console.error('afterCmd', e); }
 };
 
 async function runCmd(cmdFn, afterFn, label) {
@@ -1764,6 +1823,11 @@ async function testSgdb() {
   msg.textContent = t('set.checking');
   const r = await call('sgdb_test');
   msg.textContent = (r && r.ok) ? '✓ ' + t('set.sgdbOk') : '✗ ' + ((r && r.error) || t('set.sgdbFail'));
+}
+
+function fetchRatings() {
+  closeSettings?.();
+  runCmd(() => call('refresh_ratings'), refreshAll, t('set.fetchRatings'));
 }
 
 async function resetSettings() {
@@ -2127,8 +2191,7 @@ function updateCfg() {
    GAME LIST  (filter + sort)
 ════════════════════════════════════════ */
 let filterMode = 'all';
-const SORT_MODES = ['title', 'size', 'year', 'status'];
-let sortIdx = 0;
+let sortMode = 'title';
 
 function setFilter(mode) {
   filterMode = mode;
@@ -2136,11 +2199,14 @@ function setFilter(mode) {
     b.classList.toggle('active', b.getAttribute('data-filter') === mode));
   renderList();
 }
-function cycleSort() {
-  sortIdx = (sortIdx + 1) % SORT_MODES.length;
-  document.getElementById('sortLabel').textContent = t('sort.' + SORT_MODES[sortIdx]);
+function setSort(mode) {
+  sortMode = mode || 'title';
   renderList();
 }
+const _dlSize = g => (g.installer_size || 0) + (g.extras_size || 0);
+const _relTs  = g => Date.parse((g.release_date || (g.product && g.product.release_date) || '')) || 0;
+const _rating = g => (typeof g.rating === 'number' ? g.rating : -1);
+
 function _filteredGames() {
   const q = document.getElementById('q').value.toLowerCase();
   let arr = games.filter(g =>
@@ -2149,16 +2215,23 @@ function _filteredGames() {
   // "Downloaded" = has a downloaded installer/extras, independent of whether the
   // game is also physically installed (GOGinstall vs GOG_Games are separate).
   if (filterMode === 'downloaded') arr = arr.filter(g => g.downloaded);
-  const mode = SORT_MODES[sortIdx];
-  const yr = g => parseInt(g.release_year || (g.product && g.product.release_date || '').slice(0,4)) || 0;
+  const byTitle = (a, b) => a.title.localeCompare(b.title);
   arr.sort((a, b) => {
-    if (mode === 'size')   return (b.installer_size||0) - (a.installer_size||0);
-    if (mode === 'year')   return yr(b) - yr(a);
-    if (mode === 'status') return (b.installed - a.installed) || (b.downloaded - a.downloaded)
-                                  || a.title.localeCompare(b.title);
-    return a.title.localeCompare(b.title);
+    if (sortMode === 'size')    return _dlSize(b) - _dlSize(a) || byTitle(a, b);
+    if (sortMode === 'release') return _relTs(b)  - _relTs(a)  || byTitle(a, b);
+    if (sortMode === 'rating')  return _rating(b) - _rating(a) || byTitle(a, b);
+    if (sortMode === 'status')  return (b.installed - a.installed)
+                                    || (b.downloaded - a.downloaded) || byTitle(a, b);
+    return byTitle(a, b);
   });
   return arr;
+}
+// Short right-aligned value reflecting the ACTIVE sort, so sorting is visible.
+function _sortBadge(g) {
+  if (sortMode === 'size')    { const s = _dlSize(g); return s ? formatSize(s) : ''; }
+  if (sortMode === 'release') { const d = (g.release_date || (g.product && g.product.release_date) || ''); return d ? String(d).slice(0, 10) : ''; }
+  if (sortMode === 'rating')  return (typeof g.rating === 'number') ? ('★ ' + g.rating.toFixed(1)) : '';
+  return '';
 }
 function renderList() {
   const el = document.getElementById('list');
@@ -2181,15 +2254,17 @@ function renderList() {
                     : t('status.notDownloaded');
     const plats = (g.platforms||[]).join(', ');
     const sub = plats ? `${statusTxt} · ${plats}` : statusTxt;
+    const badge = _sortBadge(g);
     b.innerHTML =
       `<div style="position:relative;flex:0 0 auto">` +
         `<img class="item-icon" src="${toUrl(g.icon)}" onerror="this.style.visibility='hidden'">` +
         pip +
       `</div>` +
-      `<div style="min-width:0">` +
+      `<div style="min-width:0;flex:1">` +
         `<div style="font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(g.title)}</div>` +
         `<div class="small item-sub">${esc(sub)}</div>` +
-      `</div>`;
+      `</div>` +
+      (badge ? `<div class="item-badge small">${esc(badge)}</div>` : ``);
     b.onclick = () => { sel = g.id; renderList(); renderMain(); };
     el.appendChild(b);
    } catch (err) {
@@ -2352,7 +2427,8 @@ function renderMain() {
           <h2>${t('detail.metadata')}</h2>
           <div class="body">
             <div class="meta-grid">
-              <div class="fact"><div class="label">${t('detail.releaseDate')}</div><div class="value">${esc(p.release_date||d.releaseTimestamp||'—')}</div></div>
+              <div class="fact"><div class="label">${t('detail.releaseDate')}</div><div class="value">${esc((p.release_date||d.releaseTimestamp||'—').slice ? (p.release_date||d.releaseTimestamp||'—').slice(0,10) : '—')}</div></div>
+              <div class="fact"><div class="label">${t('detail.rating')}</div><div class="value">${typeof g.rating==='number' ? ('★ '+g.rating.toFixed(1)+' <span class="small" style="opacity:.6">('+(g.rating_count||0)+')</span>') : '—'}</div></div>
               <div class="fact"><div class="label">${t('detail.installable')}</div><div class="value">${p.is_installable?t('detail.yes'):t('detail.no')}</div></div>
               <div class="fact"><div class="label">${t('detail.languages')}</div><div class="value" style="font-size:11px">${esc(Object.values(p.languages||{}).join(', ')||'—')}</div></div>
               <div class="fact"><div class="label">${t('detail.platforms')}</div><div class="value">${esc((g.platforms||[]).join(', ')||'—')}</div></div>
@@ -2656,10 +2732,30 @@ function submitDownload() {
   if (!g) return;
   if (mode !== 'install' && !keys.length) return;
   closeDownloadModal();
-  if (mode === 'install')
-    runCmd(() => call('install_game', String(g.id), keys), refreshAll, `instalacja: ${g.title}…`);
-  else
-    runCmd(() => call('start_download', String(g.id), keys), refreshAll, `pobieranie: ${g.title}…`);
+  const label = (mode === 'install' ? (LANG==='pl'?'Instalacja: ':'Install: ')
+                                    : (LANG==='pl'?'Pobieranie: ':'Download: ')) + g.title;
+  const fn = mode === 'install'
+    ? () => call('install_game', String(g.id), keys)
+    : () => call('start_download', String(g.id), keys);
+  // Queueable: if something is already running, this is added to the queue
+  // instead of being rejected.
+  submitQueueable(fn, label);
+}
+
+async function submitQueueable(cmdFn, label) {
+  try {
+    const r = await cmdFn();
+    if (r && r.queued) {
+      toast((LANG==='pl' ? 'Dodano do kolejki (poz. ' : 'Queued (pos. ') + r.position + ')', 'ok');
+    } else if (r && r.started) {
+      setRunning(true, label);
+      _afterCmd = refreshAll;
+    } else if (r && r.ok === false) {
+      toast('✗ ' + (r.error || ''), 'err');
+    }
+  } catch (e) {
+    console.error('submitQueueable', e);
+  }
 }
 
 /* ════════════════════════════════════════
