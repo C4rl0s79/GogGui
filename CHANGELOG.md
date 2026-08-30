@@ -35,6 +35,9 @@ wersjonowanie wg [SemVer](https://semver.org/lang/pl/).
   po plikach instalatora w katalogu głównym; teraz uwzględnia `extras/`.
 - **Filtr „Pobrane" ukrywał zainstalowane gry** — „pobrany instalator" i
   „zainstalowana gra" to niezależne stany; gra może być w obu zakładkach.
+- **Kolejkowanie było niemożliwe podczas pracy** — okno wyboru plików było
+  blokowane (`isRunning`), a przyciski Pobierz/Instaluj renderowały się jako
+  wyłączone; teraz pozostają aktywne, by dodać zadanie do kolejki.
 
 ### Zmieniono
 - **Weryfikacja przy aktualizacji**: instalatory z tagiem builda w nazwie

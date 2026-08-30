@@ -22,6 +22,8 @@ def _base_dirs():
     return app, res
 
 
+APP_VERSION = "1.1.0"      # see CHANGELOG.md
+
 APP_DIR, RESOURCE_DIR = _base_dirs()
 # Portable app state — ALWAYS inside the program directory (next to the exe):
 CACHE       = APP_DIR / "_gog_cache"       # index, secrets, packed library (never moves)
@@ -3849,7 +3851,7 @@ if __name__ == "__main__":
     ensure_dirs()
     build_index()
     webview.create_window(
-        "GOG Library Manager", str(HTML),
+        f"GOG Library Manager v{APP_VERSION}", str(HTML),
         js_api=Api(), width=1600, height=1000,
     )
     # debug (devtools) only during development; off in the packaged exe.

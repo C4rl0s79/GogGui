@@ -2310,12 +2310,14 @@ function gameActionButtons(g) {
     const sz = g.installer_size ? ` (${formatSize(g.installer_size)})` : '';
     btns.push(`<button class="btn btn-danger"${dis} id="deleteInstallerBtn">${t('btn.deleteInstaller')}${sz}</button>`);
     btns.push(`<button class="btn"${dis} id="openInstallerBtn">${t('btn.openInstaller')}</button>`);
-    btns.push(`<button class="btn"${dis} id="reDownloadBtn">${t('btn.reDownload')}</button>`);
+    // Queueable: stays clickable while busy so it can be added to the queue.
+    btns.push(`<button class="btn" id="reDownloadBtn">${t('btn.reDownload')}</button>`);
   } else {
     // Not downloaded: download the offline installer OR install straight from
-    // Galaxy depots (no installer file at all — files assembled into GOG Games)
-    btns.push(`<button class="btn primary"${dis} id="downloadBtn">${t('btn.download')}</button>`);
-    btns.push(`<button class="btn"${dis} id="depotInstallBtn">${t('btn.depotInstall')}</button>`);
+    // Galaxy depots (no installer file at all — files assembled into GOG Games).
+    // Both are queueable → never disabled while busy.
+    btns.push(`<button class="btn primary" id="downloadBtn">${t('btn.download')}</button>`);
+    btns.push(`<button class="btn" id="depotInstallBtn">${t('btn.depotInstall')}</button>`);
   }
 
   if (g.downloaded)
@@ -2603,7 +2605,8 @@ function _dlRowMeta(r) {
 }
 
 async function openDownloadModal(g, mode = 'download') {
-  if (isRunning) return;
+  // NOTE: intentionally NOT blocked while busy — opening the picker while a job
+  // runs lets the user queue another download/install (submitDownload enqueues).
   _dlGame = g;
   _dlMode = mode;
   const install = (mode === 'install');
