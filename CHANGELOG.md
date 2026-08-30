@@ -4,6 +4,19 @@ Wszystkie istotne zmiany w projekcie **GOG Library Manager** (gogv2).
 Format oparty na [Keep a Changelog](https://keepachangelog.com/pl/1.1.0/),
 wersjonowanie wg [SemVer](https://semver.org/lang/pl/).
 
+## [1.1.1] - 2026-08-30
+
+### Naprawiono
+- **Przerwana instalacja z depotu była uznawana za ukończoną przy wznowieniu.**
+  Grę uznawaliśmy za zainstalowaną po obecności pliku `goggame-*.info`, ale ten
+  plik jest częścią danych gry i bywa pobrany z depotu ZANIM reszta się ukończy;
+  stan wznawiania (`_goginstall_state.json`) kasujemy dopiero po sukcesie. Skutek:
+  po przerwaniu ponowny „Zainstaluj" widział `goggame-*.info` i odmawiał („już
+  zainstalowana") zamiast wznowić. Teraz katalog z obecnym `_goginstall_state.json`
+  jest traktowany jako instalacja w toku — nie „zainstalowana" — więc wznowienie
+  dokańcza pobieranie. Poprawia też status w bibliotece (gra w trakcie nie pokazuje
+  się jako zainstalowana).
+
 ## [1.1.0] - 2026-08-30
 
 ### Dodano

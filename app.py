@@ -22,7 +22,7 @@ def _base_dirs():
     return app, res
 
 
-APP_VERSION = "1.1.0"      # see CHANGELOG.md
+APP_VERSION = "1.1.1"      # see CHANGELOG.md
 
 APP_DIR, RESOURCE_DIR = _base_dirs()
 # Portable app state — ALWAYS inside the program directory (next to the exe):
@@ -868,6 +868,13 @@ def scan_installed_games() -> dict:
     try:
         for game_dir in GOG_GAMES.iterdir():
             if not game_dir.is_dir():
+                continue
+            # Instalacja z depotu w toku / do wznowienia: plik gry
+            # goggame-*.info bywa pobrany z depotu ZANIM reszta się ukończy,
+            # a stan wznawiania (_goginstall_state.json) kasujemy dopiero po
+            # sukcesie. Dopóki on jest, gra NIE jest jeszcze zainstalowana —
+            # inaczej wznowienie widziałoby ją jako „już zainstalowaną".
+            if (game_dir / _DEPOT_STATE_NAME).exists():
                 continue
             for info in game_dir.glob("goggame-*.info"):
                 m = re.match(r"goggame-(\d+)\.info$", info.name)
