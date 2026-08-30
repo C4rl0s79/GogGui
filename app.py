@@ -22,7 +22,7 @@ def _base_dirs():
     return app, res
 
 
-APP_VERSION = "1.1.2"      # see CHANGELOG.md
+APP_VERSION = "1.1.3"      # see CHANGELOG.md
 
 APP_DIR, RESOURCE_DIR = _base_dirs()
 # Portable app state — ALWAYS inside the program directory (next to the exe):

@@ -4,6 +4,15 @@ Wszystkie istotne zmiany w projekcie **GOG Library Manager** (gogv2).
 Format oparty na [Keep a Changelog](https://keepachangelog.com/pl/1.1.0/),
 wersjonowanie wg [SemVer](https://semver.org/lang/pl/).
 
+## [1.1.3] - 2026-08-30
+
+### Naprawiono
+- **Literówka w tłumaczeniu (EN) łamała cały JavaScript — żaden przycisk nie
+  reagował.** Apostrof w „site's" był podwójnie zescapowany (`\\'`), przez co
+  string i18n zamykał się za wcześnie (SyntaxError → cały `<script>` nie ładował
+  się). Poprawiono na `\'`; sortowanie „Data zakupu" z 1.1.2 działa dopiero z tą
+  wersją. (Weryfikacja: `node --check`.)
+
 ## [1.1.2] - 2026-08-30
 
 ### Dodano
