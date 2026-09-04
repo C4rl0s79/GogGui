@@ -4,6 +4,40 @@ Wszystkie istotne zmiany w projekcie **GOG Library Manager** (gogv2).
 Format oparty na [Keep a Changelog](https://keepachangelog.com/pl/1.1.0/),
 wersjonowanie wg [SemVer](https://semver.org/lang/pl/).
 
+## [1.3.0] - 2026-08-30
+
+### Dodano
+- **Wybór języka(ów) instalacji z depotów.** Wcześniej instalacja z depotu brała
+  zawsze angielski + depoty neutralne (zahardkodowane `_lang_match`), bez wyboru i
+  bez możliwości wielu języków — dla gier z osobnymi depotami językowymi (np.
+  Wiedźmin 3 ma pl/de/fr/ru… po ~4 GB każdy) polska wersja nigdy się nie
+  instalowała. Teraz:
+  - okno instalacji **i** „Dograj DLC" pokazuje listę **rzeczywistych języków z
+    buildu** (`get_build_languages`) z polem wyboru (wiele naraz);
+  - domyślne języki w Ustawieniach → Pobieranie (`depot_langs`, domyślnie `en`),
+    nadpisywalne per instalacja;
+  - dopasowanie po prefiksie (`pl` ↔ `pl-PL`), depoty neutralne (`*`) zawsze
+    wchodzą; instalacja bazy i DLC używa tego samego wyboru.
+
+## [1.2.0] - 2026-08-30
+
+### Dodano
+- **Dogrywanie DLC do zainstalowanej gry** — przycisk „➕ Dograj DLC" przy grze
+  zainstalowanej otwiera listę DLC; zaznaczone są instalowane z depotów Galaxy
+  prosto do katalogu gry (`install_dlc` / `_install_dlc_worker`, kolejkowalne).
+  Lista pokazuje **tylko posiadane** DLC, a te już zainstalowane są oznaczone
+  („zainstalowane") i domyślnie odznaczone — program wie, co jest wgrane
+  (`get_downloads` zwraca `installed_dlc` na podstawie `goggame-{id}.info`).
+
+### Naprawiono
+- **DLC zaznaczone przy instalacji z depotu nie było instalowane** (np.
+  Cyberpunk). Wcześniej DLC z instalacji depot trafiało do ścieżki offline
+  (pobranie instalatora do GOGinstall) zamiast być rozpakowane do katalogu gry.
+  Teraz zaznaczone DLC są instalowane z **ich własnych depotów** (osobny
+  `productId` → własny secure-link) do katalogu gry, z zapisem `goggame-{dlc}.info`
+  (`_install_dlc_via_depots`). W kroku „extras" pozostają już tylko prawdziwe
+  dodatki i language packs — DLC nigdy nie jest tu pobierane jako instalator.
+
 ## [1.1.3] - 2026-08-30
 
 ### Naprawiono

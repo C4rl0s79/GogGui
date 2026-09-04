@@ -575,6 +575,11 @@ main { height: 100%; overflow: hidden; display: flex; flex-direction: column; mi
 /* ── download selection modal ── */
 .dl-box { width: 620px; }
 .dl-group { margin-bottom: 18px; }
+.dl-langs { display: flex; flex-wrap: wrap; gap: 6px 14px; }
+.dl-lang { display: inline-flex; align-items: center; gap: 6px; font-size: 12px;
+  background: var(--panel2); border: 1px solid var(--line); border-radius: 6px;
+  padding: 3px 9px; cursor: pointer; }
+.dl-lang input { cursor: pointer; }
 .dl-group-title {
   font-size: 10px; text-transform: uppercase; letter-spacing: .07em;
   color: var(--muted); margin: 0 0 8px; padding-bottom: 4px;
@@ -1019,6 +1024,9 @@ main { height: 100%; overflow: hidden; display: flex; flex-direction: column; mi
           <div class="srow"><label data-i18n="set.updateLangs">Języki aktualizacji (installery)</label>
             <input type="text" id="s-update-langs" placeholder="en, pl" style="min-width:120px"></div>
           <div class="wiz-note" style="margin-top:6px" data-i18n="set.updateLangsNote">Kody języków oddzielone przecinkami (np. <code>en, pl</code>). Updater bierze pod uwagę tylko installery Windows w tych językach; stare wersje w extras są pomijane.</div>
+          <div class="srow"><label data-i18n="set.depotLangs">Domyślne języki instalacji (depot)</label>
+            <input type="text" id="s-depot-langs" placeholder="en" style="min-width:120px"></div>
+          <div class="wiz-note" style="margin-top:6px" data-i18n="set.depotLangsNote">Domyślne języki przy instalacji z depotów (np. <code>en, pl</code>). Można nadpisać przy każdej instalacji w oknie wyboru.</div>
         </div>
 
         <!-- ACCOUNT -->
@@ -1199,7 +1207,7 @@ const I18N = {
     'btn.launch':'▶ Uruchom','btn.runInstaller':'▶ Uruchom instalator','btn.deleteInstaller':'🗑 Usuń installer','btn.deleteGame':'🗑 Usuń grę',
     'btn.openInstaller':'📂 Folder instalatora','btn.openGame':'📂 Folder gry',
     'btn.reDownload':'↻ Pobierz ponownie','btn.download':'⬇ Pobierz installer',
-    'btn.update':'⟳ Aktualizuj installery','btn.depotInstall':'⚡ Instaluj (depot)','btn.syncGame':'↻ JSON tej gry',
+    'btn.update':'⟳ Aktualizuj installery','btn.installDlc':'➕ Dograj DLC','btn.depotInstall':'⚡ Instaluj (depot)','btn.syncGame':'↻ JSON tej gry',
     'detail.description':'Opis','detail.noDescription':'Brak opisu.',
     'detail.screenshots':'Screenshoty','detail.noScreenshots':'Brak screenshotów.',
     'detail.metadata':'Metadane','detail.releaseDate':'Data wydania','detail.rating':'Ocena GOG','detail.installable':'Instalacja',
@@ -1215,19 +1223,20 @@ const I18N = {
     'set.barThick':'Grubość paska postępu','set.height':'Wysokość','set.download':'Pobieranie',
     'set.connections':'Połączenia (pliki × segmenty)','set.extrasSub':'Extras do podkatalogu',
     'set.updateLangs':'Języki aktualizacji (installery)','set.updateLangsNote':'Kody języków oddzielone przecinkami (np. <code>en, pl</code>). Updater bierze pod uwagę tylko installery Windows w tych językach; stare wersje w extras są pomijane.',
+    'set.depotLangs':'Domyślne języki instalacji (depot)','set.depotLangsNote':'Domyślne języki przy instalacji z depotów (np. <code>en, pl</code>). Można nadpisać przy każdej instalacji w oknie wyboru.',
     'set.language':'Język / Language','set.account':'Konto GOG','set.checking':'Sprawdzanie…',
     'set.login':'Zaloguj','set.reLogin':'Zaloguj ponownie','set.loggedIn':'✓ Zalogowano',
     'set.notLoggedIn':'Niezalogowano','set.save':'Zapisz','set.preview':'Podgląd',
     'set.reset':'Domyślne','set.close':'✕','set.fetchRatings':'⭐ Pobierz oceny GOG','set.fetchRatingsNote':'Pobiera oceny użytkowników GOG (0–5) dla sortowania „Ocena GOG" — bez pełnej synchronizacji.','set.fetchPurchase':'🛒 Pobierz daty zakupu','set.fetchPurchaseNote':'Pobiera kolejność zakupów z GOG (jak „by purchase date" na stronie) dla sortowania „Data zakupu".',
     'dl.titleDownload':'Pobierz','dl.titleInstall':'⚡ Instaluj (depot)','dl.loading':'Wczytywanie listy plików z GOG…',
-    'dl.goDownload':'⬇ Pobierz zaznaczone','dl.goInstall':'⚡ Instaluj','dl.cancel':'✕ Anuluj',
-    'dl.selected':'Zaznaczono','dl.items':'({n} poz.)','dl.recommended':'✨ Zalecane','dl.selectAll':'Zaznacz wszystko',
+    'dl.goDownload':'⬇ Pobierz zaznaczone','dl.goInstall':'⚡ Instaluj','dl.goDlc':'➕ Dograj DLC','dl.titleDlc':'➕ Dograj DLC (depot)','dl.dlcNote':'Zaznaczone DLC zostaną zainstalowane z depotów Galaxy prosto do katalogu zainstalowanej gry.','dl.emptyDlc':'Ta gra nie ma DLC dostępnych w depotach.','dl.cancel':'✕ Anuluj',
+    'dl.selected':'Zaznaczono','dl.items':'({n} poz.)','dl.recommended':'✨ Zalecane','dl.selectAll':'Zaznacz wszystko','dl.languages':'Języki (depot)',
     'dl.installNote':'Gra zostanie zainstalowana bezpośrednio z depotów Galaxy (bez pobierania instalatora). Poniżej możesz opcjonalnie zaznaczyć dodatki do pobrania.',
     'dl.empty':'Brak plików do pobrania dla tej gry.','dl.emptyInstall':'Brak dodatków — gra zostanie zainstalowana bez extras.',
     'dl.loadError':'Nie udało się pobrać listy plików.',
     'dl.sec.installers':'Instalatory','dl.sec.patches':'Łatki','dl.sec.language_packs':'Pakiety językowe',
     'dl.sec.dlcs':'DLC','dl.sec.extras':'Extras',
-    'dl.badge.notOwned':'brak w bibliotece','dl.badge.old':'stara wersja?','dl.badge.pack':'paczka',
+    'dl.badge.notOwned':'brak w bibliotece','dl.badge.installed':'zainstalowane','dl.badge.old':'stara wersja?','dl.badge.pack':'paczka',
     'wiz.step':'Krok {n} z {total}','wiz.skip':'Pomiń konfigurację','wiz.back':'← Wstecz','wiz.next':'Dalej →',
     'wiz.finish':'Zakończ','wiz.welcome.title':'Witaj w GOG Library','wiz.welcome.sub':'Skonfigurujmy managera w trzech krokach.',
     'wiz.dirs.title':'1 · Katalogi','wiz.dirs.sub':'Wskaż, gdzie trzymać metadane, instalatory i zainstalowane gry.',
@@ -1272,7 +1281,7 @@ const I18N = {
     'btn.launch':'▶ Launch','btn.runInstaller':'▶ Run installer','btn.deleteInstaller':'🗑 Delete installer','btn.deleteGame':'🗑 Delete game',
     'btn.openInstaller':'📂 Installer folder','btn.openGame':'📂 Game folder',
     'btn.reDownload':'↻ Re-download','btn.download':'⬇ Download installer',
-    'btn.update':'⟳ Update installers','btn.depotInstall':'⚡ Install (depot)','btn.syncGame':'↻ Sync this game',
+    'btn.update':'⟳ Update installers','btn.installDlc':'➕ Add DLC','btn.depotInstall':'⚡ Install (depot)','btn.syncGame':'↻ Sync this game',
     'detail.description':'Description','detail.noDescription':'No description.',
     'detail.screenshots':'Screenshots','detail.noScreenshots':'No screenshots.',
     'detail.metadata':'Metadata','detail.releaseDate':'Release date','detail.rating':'GOG rating','detail.installable':'Installable',
@@ -1288,19 +1297,20 @@ const I18N = {
     'set.barThick':'Progress bar thickness','set.height':'Height','set.download':'Downloads',
     'set.connections':'Connections (files × segments)','set.extrasSub':'Extras into subfolder',
     'set.updateLangs':'Update languages (installers)','set.updateLangsNote':'Comma-separated language codes (e.g. <code>en, pl</code>). The updater only considers Windows installers in these languages; old versions parked in extras are skipped.',
+    'set.depotLangs':'Default install languages (depot)','set.depotLangsNote':'Default languages for depot installs (e.g. <code>en, pl</code>). Can be overridden per install in the picker.',
     'set.language':'Język / Language','set.account':'GOG account','set.checking':'Checking…',
     'set.login':'Log in','set.reLogin':'Log in again','set.loggedIn':'✓ Logged in',
     'set.notLoggedIn':'Not logged in','set.save':'Save','set.preview':'Preview',
     'set.reset':'Defaults','set.close':'✕','set.fetchRatings':'⭐ Fetch GOG ratings','set.fetchRatingsNote':'Fetches GOG user ratings (0–5) for the "GOG rating" sort — without a full sync.','set.fetchPurchase':'🛒 Fetch purchase dates','set.fetchPurchaseNote':'Fetches your GOG purchase order (like the site\'s "by purchase date") for the "Purchase date" sort.',
     'dl.titleDownload':'Download','dl.titleInstall':'⚡ Install (depot)','dl.loading':'Loading file list from GOG…',
-    'dl.goDownload':'⬇ Download selected','dl.goInstall':'⚡ Install','dl.cancel':'✕ Cancel',
-    'dl.selected':'Selected','dl.items':'({n} items)','dl.recommended':'✨ Recommended','dl.selectAll':'Select all',
+    'dl.goDownload':'⬇ Download selected','dl.goInstall':'⚡ Install','dl.goDlc':'➕ Add DLC','dl.titleDlc':'➕ Add DLC (depot)','dl.dlcNote':'Selected DLC will be installed from Galaxy depots straight into the installed game folder.','dl.emptyDlc':'This game has no DLC available in depots.','dl.cancel':'✕ Cancel',
+    'dl.selected':'Selected','dl.items':'({n} items)','dl.recommended':'✨ Recommended','dl.selectAll':'Select all','dl.languages':'Languages (depot)',
     'dl.installNote':'The game will be installed straight from Galaxy depots (no installer download). Optionally pick extras to download below.',
     'dl.empty':'No files to download for this game.','dl.emptyInstall':'No extras — the game will install without extras.',
     'dl.loadError':'Could not load the file list.',
     'dl.sec.installers':'Installers','dl.sec.patches':'Patches','dl.sec.language_packs':'Language packs',
     'dl.sec.dlcs':'DLC','dl.sec.extras':'Extras',
-    'dl.badge.notOwned':'not in library','dl.badge.old':'old version?','dl.badge.pack':'pack',
+    'dl.badge.notOwned':'not in library','dl.badge.installed':'installed','dl.badge.old':'old version?','dl.badge.pack':'pack',
     'wiz.step':'Step {n} of {total}','wiz.skip':'Skip setup','wiz.back':'← Back','wiz.next':'Next →',
     'wiz.finish':'Finish','wiz.welcome.title':'Welcome to GOG Library','wiz.welcome.sub':"Let's set up the manager in three steps.",
     'wiz.dirs.title':'1 · Directories','wiz.dirs.sub':'Choose where to keep metadata, installers and installed games.',
@@ -1597,6 +1607,7 @@ const DEFAULT_SETTINGS = {
   'download_threads': 4,
   'extras_subdir': true,
   'update_langs': ['en', 'pl'],
+  'depot_langs': ['en'],
   'theme': 'steam',
 };
 
@@ -1662,6 +1673,8 @@ function settingsToForm(s) {
   document.getElementById('s-extras-sub').checked = (s['extras_subdir'] !== false);
   const ul = document.getElementById('s-update-langs');
   if (ul) ul.value = (Array.isArray(s['update_langs']) ? s['update_langs'] : ['en','pl']).join(', ');
+  const dl = document.getElementById('s-depot-langs');
+  if (dl) dl.value = (Array.isArray(s['depot_langs']) ? s['depot_langs'] : ['en']).join(', ');
   const sk = document.getElementById('s-sgdb-key');
   if (sk) {
     sk.value = '';
@@ -1688,6 +1701,7 @@ function settingsFromForm() {
     'download_threads': parseInt(n('s-dl-threads')) || 4,
     'extras_subdir': document.getElementById('s-extras-sub').checked,
     'update_langs': (n('s-update-langs') || 'en, pl').split(',').map(x => x.trim().toLowerCase()).filter(Boolean),
+    'depot_langs': (n('s-depot-langs') || 'en').split(',').map(x => x.trim().toLowerCase()).filter(Boolean),
     'sgdb_key': (document.getElementById('s-sgdb-key')?.value || '').trim(),
     'art_hero_source': artHeroSource,
     'art_logo_source': artLogoSource,
@@ -2308,6 +2322,8 @@ function gameActionButtons(g) {
   if (g.installed) {
     // Installed: green Launch, folder, optional installer delete
     btns.push(`<button class="btn play"${dis} id="launchBtn">${t('btn.launch')}</button>`);
+    // Add DLC into the installed game (depot) — queueable, so never disabled.
+    btns.push(`<button class="btn" id="installDlcBtn">${t('btn.installDlc')}</button>`);
     if (g.downloaded) {
       const sz = g.installer_size ? ` (${formatSize(g.installer_size)})` : '';
       btns.push(`<button class="btn btn-danger"${dis} id="deleteInstallerBtn">${t('btn.deleteInstaller')}${sz}</button>`);
@@ -2493,6 +2509,9 @@ function renderMain() {
     const delGameBtn = document.getElementById('deleteGameBtn');
     if (delGameBtn) delGameBtn.onclick = () => confirmDeleteInstalledGame(g);
 
+    const dlcBtn = document.getElementById('installDlcBtn');
+    if (dlcBtn) dlcBtn.onclick = () => openDownloadModal(g, 'dlc');
+
   } else if (g.downloaded) {
     const runBtn = document.getElementById('runInstallerBtn');
     if (runBtn) runBtn.onclick = () =>
@@ -2620,13 +2639,18 @@ async function openDownloadModal(g, mode = 'download') {
   _dlGame = g;
   _dlMode = mode;
   const install = (mode === 'install');
-  document.getElementById('dlKicker').textContent = install ? t('dl.titleInstall') : t('dl.titleDownload');
+  const dlc     = (mode === 'dlc');
+  const hideClassic = install || dlc;   // presets/recommended only for classic download
+  document.getElementById('dlKicker').textContent =
+    dlc ? t('dl.titleDlc') : install ? t('dl.titleInstall') : t('dl.titleDownload');
   document.getElementById('dlTitle').textContent = g.title;
-  document.getElementById('dlSubtitle').textContent = install ? t('dl.installNote') : t('dl.subtitle');
-  document.getElementById('dlGo').textContent = install ? t('dl.goInstall') : t('dl.goDownload');
+  document.getElementById('dlSubtitle').textContent =
+    dlc ? t('dl.dlcNote') : install ? t('dl.installNote') : t('dl.subtitle');
+  document.getElementById('dlGo').textContent =
+    dlc ? t('dl.goDlc') : install ? t('dl.goInstall') : t('dl.goDownload');
   // The preset row is only meaningful for the classic download flow.
-  document.getElementById('dlRecommended').style.display = install ? 'none' : '';
-  document.querySelector('.dl-presets').style.display = install ? 'none' : 'flex';
+  document.getElementById('dlRecommended').style.display = hideClassic ? 'none' : '';
+  document.querySelector('.dl-presets').style.display = hideClassic ? 'none' : 'flex';
   document.getElementById('dlBody').innerHTML = `<div class="dl-empty">${t('dl.loading')}</div>`;
   document.getElementById('downloadModal').style.display = 'flex';
 
@@ -2642,12 +2666,37 @@ async function openDownloadModal(g, mode = 'download') {
   if (install)
     html += `<div class="dl-group"><div class="dl-group-title" style="opacity:.8;text-transform:none;font-weight:400">${t('dl.installNote')}</div></div>`;
 
-  const sections = install
+  // Language chooser (depot install / add-DLC) — from the build's real languages.
+  if (install || dlc) {
+    let avail = ['en'];
+    try {
+      const bl = await call('get_build_languages', String(g.id));
+      if (bl && bl.ok && Array.isArray(bl.languages) && bl.languages.length) avail = bl.languages;
+    } catch (e) { console.warn('build langs', e); }
+    const def = new Set((cfg.depot_langs || ['en']).map(x => String(x).toLowerCase()));
+    // If none of the defaults exist for this game, fall back to the first available.
+    if (![...def].some(d => avail.includes(d))) def.clear(), def.add(avail[0]);
+    html += `<div class="dl-group"><div class="dl-group-head">
+        <span class="dl-group-title">${t('dl.languages')}</span></div>
+      <div class="dl-langs">` +
+      avail.map(code => `<label class="dl-lang"><input type="checkbox" class="dl-lang-cb" value="${esc(code)}" ${def.has(code) ? 'checked' : ''}> ${esc(_langName(code))}</label>`).join('') +
+      `</div></div>`;
+  }
+
+  const sections = dlc
+    ? _DL_SECTIONS.filter(([f]) => f === 'dlcs')
+    : install
     ? _DL_SECTIONS.filter(([f]) => f === 'extras' || f === 'dlcs' || f === 'language_packs')
     : _DL_SECTIONS;
 
+  // Which DLC are already installed in the game folder (goggame-{id}.info).
+  const installedDlc = new Set(man.installed_dlc || []);
+  const dlcId = r => String(r.key || '').split(':')[1] || '';
+
   for (const [field] of sections) {
-    const rows = man[field] || [];
+    let rows = man[field] || [];
+    // "Add DLC" flow: only OWNED DLC are actionable — hide the rest.
+    if (dlc && field === 'dlcs') rows = rows.filter(r => r.owned !== false);
     if (!rows.length) continue;
     const gi = _dlRows.length;                       // first row index of this group
     html += `<div class="dl-group" data-group="${field}">
@@ -2658,13 +2707,17 @@ async function openDownloadModal(g, mode = 'download') {
     for (const r of rows) {
       const idx = _dlRows.push(r) - 1;
       const notOwned = (r.category === 'dlc' && r.owned === false);
+      const isInst   = (r.category === 'dlc') && installedDlc.has(dlcId(r));
       const heavy = (r.heavy || notOwned) ? ' heavy' : '';
       const badge = notOwned ? `<span class="dl-badge" style="background:#8a5a5a">${t('dl.badge.notOwned')}</span>`
+                  : isInst   ? `<span class="dl-badge" style="background:#3a6a4a">${t('dl.badge.installed')}</span>`
                   : r.heavy  ? `<span class="dl-badge">${t('dl.badge.old')}</span>`
                   : (r.group ? `<span class="dl-badge">${t('dl.badge.pack')}</span>` : '');
+      // Default-check: DLC mode → owned & not-yet-installed; else backend default.
+      const checked = dlc ? (!isInst) : r.default;
       const flag = _langFlag(r);
       html += `<div class="dl-row${heavy}" data-gi="${field}">
-        <input type="checkbox" id="dlc${idx}" ${r.default ? 'checked' : ''} ${notOwned ? 'disabled' : ''} onchange="recomputeDlSum()">
+        <input type="checkbox" id="dlc${idx}" ${checked ? 'checked' : ''} ${notOwned ? 'disabled' : ''} onchange="recomputeDlSum()">
         <div class="dl-main">
           <div class="dl-name">${esc(r.name || r.key)}${flag ? `<span class="dl-flag" title="${esc(r.lang_full||r.lang||'')}">${flag}</span>` : ''}${badge}${(r.md5||r.checksum)?'<span class="dl-mono">MD5</span>':''}${r.version?`<span class="dl-mono">GOG·${esc(r.version)}</span>`:''}</div>
           <div class="dl-meta">${esc(_dlRowMeta(r))}</div>
@@ -2674,7 +2727,9 @@ async function openDownloadModal(g, mode = 'download') {
     }
     html += '</div>';
   }
-  if (!_dlRows.length && _dlMode !== 'install')
+  if (!_dlRows.length && dlc)
+    html = `<div class="dl-empty">${t('dl.emptyDlc')}</div>`;
+  else if (!_dlRows.length && _dlMode !== 'install')
     html = `<div class="dl-empty">${t('dl.empty')}</div>`;
   else if (!_dlRows.length)
     html += `<div class="dl-empty">${t('dl.emptyInstall')}</div>`;
@@ -2721,6 +2776,21 @@ function _selectedDlKeys() {
   return keys;
 }
 
+function _selectedDlLangs() {
+  return Array.from(document.querySelectorAll('.dl-lang-cb:checked')).map(cb => cb.value);
+}
+
+const _LANG_NAMES = {
+  en:'English', pl:'Polski', de:'Deutsch', fr:'Français', es:'Español',
+  it:'Italiano', ru:'Русский', pt:'Português', ja:'日本語', ko:'한국어',
+  zh:'中文', cs:'Čeština', hu:'Magyar', nl:'Nederlands', pt_br:'Português (BR)',
+  tr:'Türkçe', uk:'Українська', sv:'Svenska', da:'Dansk', fi:'Suomi', no:'Norsk',
+};
+function _langName(code) {
+  const c = String(code || '').toLowerCase();
+  return _LANG_NAMES[c] ? `${_LANG_NAMES[c]} (${c})` : c;
+}
+
 function recomputeDlSum() {
   let bytes = 0, n = 0;
   _dlRows.forEach((r, i) => {
@@ -2743,16 +2813,18 @@ function submitDownload() {
   const g    = _dlGame;
   const mode = _dlMode;
   if (!g) return;
-  if (mode !== 'install' && !keys.length) return;
+  if (mode !== 'install' && !keys.length) return;   // dlc & download need a selection
   closeDownloadModal();
-  const label = (mode === 'install' ? (LANG==='pl'?'Instalacja: ':'Install: ')
-                                    : (LANG==='pl'?'Pobieranie: ':'Download: ')) + g.title;
-  const fn = mode === 'install'
-    ? () => call('install_game', String(g.id), keys)
-    : () => call('start_download', String(g.id), keys);
+  const pfx = mode === 'install' ? (LANG==='pl'?'Instalacja: ':'Install: ')
+            : mode === 'dlc'     ? (LANG==='pl'?'DLC: ':'DLC: ')
+            :                      (LANG==='pl'?'Pobieranie: ':'Download: ');
+  const langs = (mode === 'install' || mode === 'dlc') ? _selectedDlLangs() : null;
+  const fn = mode === 'install' ? () => call('install_game', String(g.id), keys, langs)
+           : mode === 'dlc'     ? () => call('install_dlc',  String(g.id), keys, langs)
+           :                      () => call('start_download', String(g.id), keys);
   // Queueable: if something is already running, this is added to the queue
   // instead of being rejected.
-  submitQueueable(fn, label);
+  submitQueueable(fn, pfx + g.title);
 }
 
 async function submitQueueable(cmdFn, label) {

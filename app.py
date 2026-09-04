@@ -22,7 +22,7 @@ def _base_dirs():
     return app, res
 
 
-APP_VERSION = "1.1.3"      # see CHANGELOG.md
+APP_VERSION = "1.3.0"      # see CHANGELOG.md
 
 APP_DIR, RESOURCE_DIR = _base_dirs()
 # Portable app state — ALWAYS inside the program directory (next to the exe):
@@ -116,6 +116,7 @@ DEFAULT_SETTINGS: dict = {
     "download_threads": _CONN_DEFAULT,   # parallel connections budget (1–6)
     "extras_subdir": True,               # put bonus content into <game>/extras/
     "update_langs": ["en", "pl"],        # languages the installer-updater keeps (os = windows)
+    "depot_langs":  ["en"],              # default languages for depot install (prefix match)
     # Persisted directories ("" = use the built-in defaults above)
     "json_dir":    "",
     "install_dir": "",
@@ -2366,8 +2367,30 @@ def _download_selection(g: dict, chosen: list) -> bool:
     return bad == 0
 
 
+def _installed_dlc_ids(game_id) -> list:
+    """DLC already installed for a game = goggame-{id}.info files present in its
+    install dir, other than the base product id."""
+    g = next((x for x in scan_games() if x["id"] == str(game_id)), None)
+    if not g:
+        return []
+    base_pid = str(g["product"].get("id") or "")
+    install_dir = scan_installed_games().get(str(game_id))
+    if not install_dir:
+        return []
+    out = []
+    for info in Path(install_dir).glob("goggame-*.info"):
+        m = re.match(r"goggame-(\d+)\.info$", info.name)
+        if m and m.group(1) != base_pid:
+            out.append(m.group(1))
+    return out
+
+
 def get_downloads(game_id) -> dict:
-    return get_download_manifest(game_id)
+    man = get_download_manifest(game_id)
+    if man.get("ok"):
+        man["installed"]     = bool(scan_installed_games().get(str(game_id)))
+        man["installed_dlc"] = _installed_dlc_ids(game_id)
+    return man
 
 
 # ── depot install (Galaxy content-system v2) ──────────────────────────────────
@@ -2559,8 +2582,47 @@ def _apply_support_data(install_dir: Path, pid: str) -> None:
             log(f"supportData copy error ({src}→{dst}): {exc}")
 
 
-def _lang_match(langs: list) -> bool:
-    return any(l == "*" or str(l).lower().startswith("en") for l in (langs or []))
+def _norm_lang(code: str) -> str:
+    """GOG language code → short prefix, e.g. 'en-US' → 'en', 'zh-Hans' → 'zh'."""
+    return str(code or "").lower().replace("_", "-").split("-")[0]
+
+
+def _lang_match(langs: list, wanted: set | None = None) -> bool:
+    """A depot is wanted if it is language-neutral ('*') or carries one of the
+    `wanted` languages (prefix match, e.g. 'pl' ↔ 'pl-PL'). `wanted` defaults to
+    English so old call sites keep working."""
+    want = {str(w).lower() for w in (wanted or {"en"})}
+    for l in (langs or []):
+        if l == "*":
+            return True
+        if _norm_lang(l) in want:
+            return True
+    return False
+
+
+def _depot_langs_setting() -> list:
+    v = get_settings().get("depot_langs")
+    return [str(x).lower() for x in v] if isinstance(v, list) and v else ["en"]
+
+
+def get_build_languages(game_id) -> dict:
+    """Languages actually available in a game's Galaxy build depots (for the UI
+    to offer a real choice). Returns {ok, languages:[codes], has_build}."""
+    g = next((x for x in scan_games() if x["id"] == str(game_id)), None)
+    if not g:
+        return {"ok": False, "error": "Gra nie znaleziona"}
+    pid = str(g["product"].get("id") or "").strip()
+    try:
+        build = _pick_build(pid)
+        meta  = _cs_get_zlib(build["link"])
+    except Exception as exc:
+        return {"ok": False, "error": str(exc), "has_build": False}
+    langs = set()
+    for d in meta.get("depots") or []:
+        for l in d.get("languages") or []:
+            if l and l != "*":
+                langs.add(_norm_lang(l))
+    return {"ok": True, "has_build": True, "languages": sorted(langs)}
 
 
 def _read_depot_state(install_dir: Path, build_id: str) -> set:
@@ -2583,11 +2645,156 @@ def _write_depot_state(install_dir: Path, build_id: str, done: set) -> None:
         pass
 
 
-def _depot_install_worker(game_id, extra_keys: list) -> bool:
+def _install_dlc_via_depots(meta: dict, dlc_ids: set, install_dir: Path,
+                            base_pid: str, box: dict, hub: "_ProgressHub",
+                            conn: int, wanted: set | None = None) -> tuple[bool, set]:
+    """Install selected DLC INTO the game directory from the build's DLC depots
+    (the way GOG Galaxy does), instead of dropping a separate offline installer
+    in GOGinstall. DLC are separate products, so each depot's chunks use that
+    DLC's own secure link. `wanted` = languages to install. Returns
+    (ok, {installed_dlc_ids})."""
+    all_depots = meta.get("depots") or []
+    ok_all, installed = True, set()
+
+    for did in sorted(dlc_ids):
+        depots = [d for d in all_depots if str(d.get("productId")) == str(did)]
+        chosen = [d for d in depots if _lang_match(d.get("languages"), wanted)] or depots
+        if not chosen:
+            _push_log(f"⚠ DLC {did}: brak depotów w tym buildzie — pomijam.")
+            continue
+
+        files, dirs, sfc = [], [], None
+        try:
+            for d in chosen:
+                man = _cs_get_zlib(f"{GOG_CDN}/content-system/v2/meta/{_galaxy_path(d['manifest'])}")
+                dep = man.get("depot") or {}
+                for it in dep.get("items") or []:
+                    t = it.get("type")
+                    if t == "DepotDirectory":
+                        dirs.append(it)
+                    elif t == "DepotFile":
+                        files.append(it)
+                if dep.get("smallFilesContainer") and sfc is None:
+                    sfc = dep["smallFilesContainer"]
+        except Exception as exc:
+            _push_log(f"✗ DLC {did}: manifest depotu: {exc}")
+            ok_all = False
+            continue
+
+        try:
+            secure = _get_secure_link(str(did), box)
+        except Exception as exc:
+            _push_log(f"✗ DLC {did}: secure_link: {exc}")
+            ok_all = False
+            continue
+
+        for it in dirs:
+            (install_dir / it["path"].replace("\\", "/").lstrip("/")).mkdir(
+                parents=True, exist_ok=True)
+
+        plain = [f for f in files if not f.get("sfcRef")]
+        sfced = [f for f in files if f.get("sfcRef")]
+        total = sum(sum(c.get("size") or 0 for c in f.get("chunks") or []) for f in plain)
+        total += sum(c.get("size") or 0 for c in (sfc.get("chunks") if sfc else []) or [])
+        _push_log(f"Instaluję DLC {did}: {len(files)} plików, {_human(total)}…")
+
+        sid = 90000 + (abs(hash(str(did))) % 1000)
+        hub.start(sid, f"DLC {did}", total)
+        got, clk = {"n": 0}, threading.Lock()
+
+        def bump(n, _sid=sid):
+            with clk:
+                got["n"] += n
+            hub.progress(_sid, got["n"])
+
+        jobs = []
+        for f in plain:
+            rel  = f["path"].replace("\\", "/").lstrip("/")
+            dest = install_dir / rel
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            chunks = f.get("chunks") or []
+            if not chunks:
+                dest.touch(exist_ok=True)
+                continue
+            with open(dest, "wb") as fh:
+                fh.truncate(sum(c.get("size") or 0 for c in chunks))
+            off = 0
+            for c in chunks:
+                jobs.append((dest, off, c))
+                off += c.get("size") or 0
+
+        errs = []
+
+        def cj(dest, off, c):
+            if _cancel.is_set() or errs:
+                return
+            try:
+                data = _fetch_chunk(secure, c["compressedMd5"])
+                with open(dest, "r+b") as fh:
+                    fh.seek(off)
+                    fh.write(data)
+                bump(len(data))
+            except Exception as exc:
+                errs.append(exc)
+
+        if jobs:
+            with ThreadPoolExecutor(max_workers=conn) as ex:
+                for fu in as_completed([ex.submit(cj, *j) for j in jobs]):
+                    fu.result()
+
+        if sfced and sfc and not errs and not _cancel.is_set():
+            tmp = install_dir / f"__gog_sfc_{did}.tmp"
+            try:
+                with open(tmp, "wb") as fh:
+                    for c in sfc.get("chunks") or []:
+                        fh.write(_fetch_chunk(secure, c["compressedMd5"]))
+                        bump(c.get("size") or 0)
+                with open(tmp, "rb") as fh:
+                    for f in sfced:
+                        rel  = f["path"].replace("\\", "/").lstrip("/")
+                        dest = install_dir / rel
+                        dest.parent.mkdir(parents=True, exist_ok=True)
+                        ref = f["sfcRef"]
+                        fh.seek(ref["offset"])
+                        dest.write_bytes(fh.read(ref["size"]))
+            except Exception as exc:
+                errs.append(exc)
+            finally:
+                try:
+                    tmp.unlink()
+                except Exception:
+                    pass
+
+        hub.finish(sid, not errs)
+        if _cancel.is_set():
+            return (False, installed)
+        if errs:
+            _push_log(f"✗ DLC {did}: {errs[0]}")
+            ok_all = False
+            continue
+
+        # goggame-{dlc}.info so the game/Galaxy recognizes the DLC as installed.
+        info = install_dir / f"goggame-{did}.info"
+        if not info.exists():
+            try:
+                info.write_text(json.dumps({
+                    "gameId": str(did), "rootGameId": str(base_pid),
+                    "name": f"DLC {did}", "playTasks": [],
+                }, indent=2), encoding="utf-8")
+            except Exception as exc:
+                log(f"dlc info write {did}: {exc}")
+        installed.add(str(did))
+        _push_log(f"✓ DLC {did} zainstalowane.")
+
+    return (ok_all, installed)
+
+
+def _depot_install_worker(game_id, extra_keys: list, langs: list | None = None) -> bool:
     g = next((x for x in scan_games() if x["id"] == str(game_id)), None)
     if not g:
         _push_log("✗ Gra nie znaleziona.")
         return False
+    wanted = {str(l).lower() for l in (langs or _depot_langs_setting())}
     installed = scan_installed_games()
     if g["id"] in installed:
         _push_log(f"✗ Gra jest już zainstalowana: {installed[g['id']]}")
@@ -2621,12 +2828,13 @@ def _depot_install_worker(game_id, extra_keys: list) -> bool:
         _push_log(f"Gra deklaruje zależności (redist): {', '.join(map(str, deps))} — "
                   "zainstaluję je po plikach gry.")
 
-    # 2. Depot manifests (base game only, EN / language-neutral) ---------------
+    # 2. Depot manifests (base game, chosen languages + language-neutral) -------
+    _push_log(f"Języki instalacji: {', '.join(sorted(wanted))}")
     depots = [d for d in (meta.get("depots") or []) if str(d.get("productId")) == pid]
-    chosen_depots = [d for d in depots if _lang_match(d.get("languages"))]
+    chosen_depots = [d for d in depots if _lang_match(d.get("languages"), wanted)]
     if not chosen_depots:
         chosen_depots = depots
-        _push_log("⚠ Brak depotu EN — instaluję wszystkie depoty gry bazowej.")
+        _push_log("⚠ Brak depotów dla wybranych języków — instaluję wszystkie depoty gry bazowej.")
     if not chosen_depots:
         _push_log("✗ Manifest nie zawiera depotów gry bazowej.")
         return False
@@ -2875,12 +3083,25 @@ def _depot_install_worker(game_id, extra_keys: list) -> bool:
     _push_log("ℹ Instalacja bez instalatora nie tworzy wpisów rejestru ani skrótów — "
               "większości gier GOG to nie przeszkadza.")
 
-    # 7. Optional extras via the classic downlink path --------------------------
-    if extra_keys:
+    # 6c. Selected DLC — installed INTO the game dir from their depots -----------
+    dlc_ids = {k.split(":")[1] for k in (extra_keys or [])
+               if isinstance(k, str) and k.startswith("dlc:") and len(k.split(":")) > 1 and k.split(":")[1]}
+    if dlc_ids:
+        _push_log(f"Instaluję zaznaczone DLC ({len(dlc_ids)}) z depotów…")
+        dlc_ok, _ = _install_dlc_via_depots(meta, dlc_ids, install_dir, pid, box,
+                                            hub, get_download_threads(), wanted)
+        if not dlc_ok:
+            _push_log("⚠ Część DLC nie zainstalowała się poprawnie.")
+
+    # 7. Optional extras / language packs via the classic downlink path ----------
+    #    (DLC are handled above as depots — never as offline installers here.)
+    non_dlc_keys = [k for k in (extra_keys or [])
+                    if not (isinstance(k, str) and k.startswith("dlc:"))]
+    if non_dlc_keys:
         man  = get_download_manifest(game_id)
-        rows = man.get("extras", []) + man.get("dlcs", []) + man.get("language_packs", [])
+        rows = man.get("extras", []) + man.get("language_packs", [])
         by_key = {r["key"]: r for r in rows}
-        chosen = [by_key[k] for k in extra_keys if k in by_key]
+        chosen = [by_key[k] for k in non_dlc_keys if k in by_key]
         if chosen:
             _push_log(f"Pobieram dodatki ({len(chosen)} poz.)…")
             if not _download_selection(g, chosen):
@@ -2888,10 +3109,64 @@ def _depot_install_worker(game_id, extra_keys: list) -> bool:
     return True
 
 
-def install_game(game_id, extra_keys=None) -> dict:
+def install_game(game_id, extra_keys=None, langs=None) -> dict:
     keys = extra_keys if isinstance(extra_keys, list) else []
-    return _submit_task(lambda: _depot_install_worker(game_id, keys),
+    langs = langs if isinstance(langs, list) else None
+    return _submit_task(lambda: _depot_install_worker(game_id, keys, langs),
                         _task_label("Instalacja", game_id), queueable=True)
+
+
+def _install_dlc_worker(game_id, dlc_keys: list, langs: list | None = None) -> bool:
+    """Add selected DLC (from their depots) into an ALREADY-installed game."""
+    g = next((x for x in scan_games() if x["id"] == str(game_id)), None)
+    if not g:
+        _push_log("✗ Gra nie znaleziona.")
+        return False
+    pid = str(g["product"].get("id") or "").strip()
+    install_dir = scan_installed_games().get(g["id"])
+    if not install_dir:
+        _push_log("✗ Gra nie jest zainstalowana — najpierw zainstaluj grę.")
+        return False
+    install_dir = Path(install_dir)
+
+    box = _access_token_box()
+    if not box.get("access"):
+        _push_log("✗ Brak logowania GOG — zaloguj się w Ustawieniach.")
+        return False
+
+    dlc_ids = {k.split(":")[1] for k in (dlc_keys or [])
+               if isinstance(k, str) and k.startswith("dlc:")
+               and len(k.split(":")) > 1 and k.split(":")[1]}
+    if not dlc_ids:
+        _push_log("✗ Nie zaznaczono żadnego DLC.")
+        return False
+
+    _push_log("Pobieram build Galaxy dla DLC…")
+    try:
+        build = _pick_build(pid)
+        meta  = _cs_get_zlib(build["link"])
+    except Exception as exc:
+        _push_log(f"✗ Nie udało się pobrać manifestu builda: {exc}")
+        return False
+
+    wanted = {str(l).lower() for l in (langs or _depot_langs_setting())}
+    _push_log(f"Języki DLC: {', '.join(sorted(wanted))}")
+    hub = _ProgressHub(0)
+    ok, inst = _install_dlc_via_depots(meta, dlc_ids, install_dir, pid, box,
+                                       hub, get_download_threads(), wanted)
+    if inst:
+        _apply_support_data(install_dir, pid)
+    _send_js({"type": "completion",
+              "filename": f"{g['title']} — DLC ({len(inst)})", "speed": "OK"})
+    _push_log(f"{'✓' if ok else '⚠'} Dogrywanie DLC zakończone: {len(inst)} zainstalowanych.")
+    return ok
+
+
+def install_dlc(game_id, dlc_keys=None, langs=None) -> dict:
+    keys = dlc_keys if isinstance(dlc_keys, list) else []
+    langs = langs if isinstance(langs, list) else None
+    return _submit_task(lambda: _install_dlc_worker(game_id, keys, langs),
+                        _task_label("DLC", game_id), queueable=True)
 
 
 # ── classic-installer updater (offline installers + extras, no depots) ─────────
@@ -3891,7 +4166,9 @@ class Api:
     def get_hero_art(self, game_id):            return get_hero_art(game_id)
     def get_game_extras(self, game_id):         return get_game_extras(game_id)
     def start_download(self, game_id, keys):    return start_download(game_id, keys)
-    def install_game(self, game_id, keys=None): return install_game(game_id, keys)
+    def install_game(self, game_id, keys=None, langs=None): return install_game(game_id, keys, langs)
+    def install_dlc(self, game_id, keys=None, langs=None):   return install_dlc(game_id, keys, langs)
+    def get_build_languages(self, game_id):     return get_build_languages(game_id)
     def update_game(self, game_id):             return update_game(game_id)
     def update_all_games(self):                 return update_all_games()
     def run_installer(self, game_id):           return run_installer(game_id)
