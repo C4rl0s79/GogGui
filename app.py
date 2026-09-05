@@ -22,7 +22,12 @@ def _base_dirs():
     return app, res
 
 
-APP_VERSION = "1.3.0"      # see CHANGELOG.md
+APP_VERSION = "1.4.0"      # see CHANGELOG.md
+
+IS_WIN = os.name == "nt"
+# The user's platform as GOG's API names it — decides which offline installers
+# and which Galaxy builds we are shown at all ("windows" | "linux").
+_MY_OS = "windows" if IS_WIN else "linux"
 
 APP_DIR, RESOURCE_DIR = _base_dirs()
 # Portable app state — ALWAYS inside the program directory (next to the exe):
@@ -34,9 +39,15 @@ SECRETS_FILE    = CACHE / "secrets.json"   # SGDB key etc., encrypted at rest
 ART_FILE        = CACHE / "art.json"        # per-game hero/logo choices (auto + pinned)
 JSON_DIR   = APP_DIR / "json"              # legacy per-slug JSON (auto-migrated into LIBRARY_PAK)
 HTML       = RESOURCE_DIR / "assets" / "index.html"   # read-only, from the bundle
-# User content — configurable AND portable (created under APP_DIR if missing):
-BASE       = Path(r"D:\GOGinstall")        # installer download directory
-GOG_GAMES  = Path(r"C:\GOG Games")         # installed games directory
+# User content — configurable AND portable (created under APP_DIR if missing).
+# Linux has no equivalent of "C:\GOG Games", and writing outside $HOME needs
+# root, so the defaults live under the home directory.
+if IS_WIN:
+    BASE       = Path(r"D:\GOGinstall")        # installer download directory
+    GOG_GAMES  = Path(r"C:\GOG Games")         # installed games directory
+else:
+    BASE       = Path.home() / "GOG" / "installers"
+    GOG_GAMES  = Path.home() / "GOG" / "games"
 
 PRODUCT_RE     = re.compile(r"^product_(.+)\.json$", re.I)
 INSTALLER_EXTS = ("*.exe", "*.sh", "*.bin", "*.dmg", "*.pkg")
@@ -76,7 +87,7 @@ _GOG_FETCH_WORKERS = 8
 # ── Galaxy content-system v2 (depot install — no offline installer) ──────────
 GOG_CONTENT_SYSTEM = "https://content-system.gog.com"
 GOG_CDN            = "https://gog-cdn-fastly.gog.com"
-GOG_BUILDS_API     = GOG_CONTENT_SYSTEM + "/products/{id}/os/windows/builds?generation=2"
+GOG_BUILDS_API     = GOG_CONTENT_SYSTEM + "/products/{id}/os/" + _MY_OS + "/builds?generation=2"
 GOG_SECURE_LINK    = GOG_CONTENT_SYSTEM + "/products/{id}/secure_link?_version=2&generation=2&path=/"
 # Redist dependencies (DOSBox, ScummVM, VC++ …) live in a shared repository and a
 # public store CDN — no product-scoped auth is needed to download their chunks.
@@ -115,7 +126,7 @@ DEFAULT_SETTINGS: dict = {
     "--bar-height":  "8px",       # progress-bar track height
     "download_threads": _CONN_DEFAULT,   # parallel connections budget (1–6)
     "extras_subdir": True,               # put bonus content into <game>/extras/
-    "update_langs": ["en", "pl"],        # languages the installer-updater keeps (os = windows)
+    "update_langs": ["en", "pl"],        # languages the installer-updater keeps (os = _MY_OS)
     "depot_langs":  ["en"],              # default languages for depot install (prefix match)
     # Persisted directories ("" = use the built-in defaults above)
     "json_dir":    "",
@@ -1633,8 +1644,8 @@ def sync_json_game(game_id) -> dict:
 
 # ── selective download (pure-Python, GOG API only) ─────────────────────────────
 
-# This machine runs Windows, so the user's platform is "windows".
-_MY_OS = "windows"
+# _MY_OS ("windows" / "linux") is set at the top of the file — the download
+# manifest, the builds API and the installer picker all key off it.
 
 # Names that signal an *old game version* parked in extras (to default-uncheck).
 _HEAVY_RE = re.compile(
@@ -2489,6 +2500,11 @@ def _pick_build(product_id: str) -> dict:
             return it
     if items:
         return items[0]
+    if not IS_WIN:
+        # Most GOG titles have no Galaxy build for Linux at all — the native
+        # Linux release ships only as an offline .sh installer.
+        raise RuntimeError("Brak buildów Galaxy dla Linuksa — użyj instalatora "
+                           "offline (.sh) zamiast instalacji z depotów")
     raise RuntimeError("Brak buildów Galaxy (generation=2) dla Windows")
 
 
@@ -3522,12 +3538,25 @@ def launch_game(game_id) -> dict:
                         workdir = root / wd.replace("\\", "/")
     except Exception as exc:
         log(f"launch_game info parse: {exc}")
+    if exe is None and not IS_WIN:
+        # Native Linux builds ship a MojoSetup launcher in the game root; the
+        # goggame-*.info playTasks above exist only in Windows installs.
+        exe = next((p for p in (root / "start.sh", root / "game" / "start.sh")
+                    if p.is_file()), None)
+        if exe is None:
+            exe = next((p for p in sorted(root.rglob("*.sh"))
+                        if not re.search(r"(uninstall|support|docs?)", p.name, re.I)),
+                       None)
     if exe is None:
         exes = sorted(root.rglob("*.exe"))
         # Skip obvious non-game binaries (incl. the bundled DOSBox config tool).
         exe = next((e for e in exes if not re.search(
             r"(unins|redist|vcredist|dxsetup|dotnet|crashpad|setup|gogdosconfig|dosbox)",
             e.name, re.I)), exes[0] if exes else None)
+        if exe is not None and not IS_WIN:
+            return {"ok": False, "error":
+                    "Zainstalowana wersja jest windowsowa (.exe) — uruchom ją "
+                    "w Wine/Proton albo pobierz build linuksowy"}
     if exe is None:
         return open_folder(str(root))
     if workdir is None or not Path(workdir).is_dir():
@@ -3536,8 +3565,19 @@ def launch_game(game_id) -> dict:
         # DOS/ScummVM games need their -conf arguments; os.startfile can't pass
         # any, so build the command line ourselves.  A string command lets
         # Windows CreateProcess parse the (backslash-heavy, quoted) args as-is.
-        cmd = f'"{exe}" {args}'.strip() if args else f'"{exe}"'
-        subprocess.Popen(cmd, cwd=str(workdir))
+        if IS_WIN:
+            cmd = f'"{exe}" {args}'.strip() if args else f'"{exe}"'
+            subprocess.Popen(cmd, cwd=str(workdir))
+        else:
+            # POSIX has no CreateProcess string parsing — split ourselves, and
+            # detach so closing the manager doesn't take the game down with it.
+            import shlex
+            argv = [str(exe)] + (shlex.split(args) if args else [])
+            try:
+                os.chmod(exe, os.stat(exe).st_mode | 0o111)
+            except OSError:
+                pass
+            subprocess.Popen(argv, cwd=str(workdir), start_new_session=True)
         _push_log(f"▶ Uruchomiono grę: {exe.name}")
         return {"ok": True, "exe": str(exe)}
     except Exception as exc:
@@ -3545,7 +3585,11 @@ def launch_game(game_id) -> dict:
 
 
 def run_installer(game_id) -> dict:
-    """Launch the already-downloaded offline installer (setup*.exe)."""
+    """Launch the already-downloaded offline installer.
+
+    Windows: setup*.exe (Inno Setup). Linux: GOG's native MojoSetup *.sh —
+    a self-extracting shell script, so it must be run through a shell (the
+    download has no executable bit)."""
     g = next((x for x in scan_games() if x["id"] == str(game_id)), None)
     if not g:
         return {"ok": False, "error": "Gra nie znaleziona"}
@@ -3553,6 +3597,26 @@ def run_installer(game_id) -> dict:
     if not dl["downloaded"]:
         return {"ok": False, "error": "Installer nie jest pobrany"}
     folder = Path(dl["installer_path"])
+    if not IS_WIN:
+        shs = sorted(folder.glob("*.sh"))
+        if not shs:
+            if list(folder.glob("*.exe")):
+                return {"ok": False, "error":
+                        "To instalator windowsowy (.exe) — na Linuksie "
+                        "rozpakuj go przez innoextract albo uruchom w Wine"}
+            return {"ok": False, "error": "Nie znaleziono instalatora .sh"}
+        sh = shs[0]
+        try:
+            os.chmod(sh, os.stat(sh).st_mode | 0o111)
+        except OSError:
+            pass                        # runs through /bin/sh anyway
+        try:
+            subprocess.Popen(["/bin/sh", str(sh)], cwd=str(folder),
+                             start_new_session=True)
+            _push_log(f"▶ Uruchomiono instalator: {sh.name}")
+            return {"ok": True, "exe": str(sh)}
+        except Exception as exc:
+            return {"ok": False, "error": str(exc)}
     exes = sorted(folder.glob("*.exe"))
     exe  = next((e for e in exes if e.name.lower().startswith("setup")), exes[0] if exes else None)
     if not exe:
@@ -4126,8 +4190,16 @@ def open_folder(path: str) -> dict:
     if not p.exists():
         return {"ok": False, "error": f"Folder nie istnieje: {path}"}
     try:
-        os.startfile(str(p))
+        if IS_WIN:
+            os.startfile(str(p))
+        else:
+            # xdg-open hands the path to the user's file manager; detached, so
+            # the manager's lifetime isn't tied to ours.
+            subprocess.Popen(["xdg-open", str(p)], start_new_session=True)
         return {"ok": True}
+    except FileNotFoundError:
+        return {"ok": False, "error":
+                "Brak xdg-open — doinstaluj xdg-utils"}
     except Exception as exc:
         return {"ok": False, "error": str(exc)}
 

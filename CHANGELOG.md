@@ -4,6 +4,42 @@ Wszystkie istotne zmiany w projekcie **GOG Library Manager** (gogv2).
 Format oparty na [Keep a Changelog](https://keepachangelog.com/pl/1.1.0/),
 wersjonowanie wg [SemVer](https://semver.org/lang/pl/).
 
+## [1.4.0] - 2026-09-04
+
+### Dodano
+- **Wsparcie dla Linuksa** — paczka źródłowa `GOGManager-<wersja>-linux.zip`
+  (bez binarki): źródła + `install.sh` (venv z `--system-site-packages`,
+  zależności, wykrycie backendu GTK/Qt, opcjonalny wpis w menu przez
+  `--desktop`), `run.sh`, `requirements-linux.txt` i `DEPS.md` z komendami per
+  dystrybucja. Buduje `build_linux.ps1` — skrypty trafiają do archiwum z LF
+  i trybem 0755, stan użytkownika (`_gog_cache`, `settings.json`, logi) nie.
+- `install.sh --qt` instaluje backend Qt prosto z pipa — dla systemów bez
+  WebKitGTK i dla Steam Decka, gdzie system plików jest tylko do odczytu.
+
+### Zmieniono
+- **Platforma GOG-a nie jest już zahardkodowana.** `_MY_OS` (na górze `app.py`)
+  ma wartość `windows` albo `linux` i steruje jednocześnie manifestem pobierania,
+  wyborem instalatorów i endpointem buildów Galaxy — na Linuksie widać natywne
+  instalatory MojoSetup `.sh` zamiast `setup*.exe`.
+- **Uruchamianie instalatora** na Linuksie: `*.sh` przez `/bin/sh` (pobrany plik
+  nie ma bitu wykonywalnego), odłączone od procesu menedżera. Gdy w katalogu
+  leży tylko `.exe`, komunikat kieruje do innoextract/Wine zamiast milczeć.
+- **Uruchamianie gry** na Linuksie idzie przez `start.sh` w katalogu gry —
+  `playTasks` z `goggame-*.info` istnieją tylko w wydaniach windowsowych.
+  Argumenty rozbijane przez `shlex` (POSIX nie parsuje stringa jak CreateProcess).
+- **„Otwórz folder"** używa `xdg-open` zamiast `os.startfile`; brak `xdg-utils`
+  daje czytelny komunikat.
+- **Katalogi domyślne** na Linuksie to `~/GOG/installers` i `~/GOG/games`
+  (windowsowe `D:\GOGinstall` / `C:\GOG Games` nie mają tam odpowiednika).
+- **Instalacja z depotów** na Linuksie mówi wprost, że dana gra nie ma buildu
+  linuksowego i trzeba użyć instalatora offline, zamiast zgłaszać brak buildów
+  „dla Windows".
+
+### Uwagi
+- Sekrety na Linuksie: bez TPM-a i DPAPI (nie mają tam odpowiednika) —
+  `data.json` jest zaciemniony i zapisany z prawami `0600`. Ścieżka windowsowa
+  (TPM → DPAPI) zostaje bez zmian.
+
 ## [1.3.0] - 2026-08-30
 
 ### Dodano
