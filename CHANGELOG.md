@@ -4,6 +4,55 @@ Wszystkie istotne zmiany w projekcie **GOG Library Manager** (gogv2).
 Format oparty na [Keep a Changelog](https://keepachangelog.com/pl/1.1.0/),
 wersjonowanie wg [SemVer](https://semver.org/lang/pl/).
 
+## [1.4.2] - 2026-09-15
+
+### Naprawiono
+- **Przerwana instalacja z depotu przed pierwszym zapisem stanu** mogła zostać
+  uznana za ukończoną (gdy depot dostarczył `goggame-*.info` zanim padł proces).
+  Marker wznawiania `_goginstall_state.json` jest teraz tworzony PRZED pobraniem
+  jakiegokolwiek pliku.
+- **Katalogi docelowe** — świeża instalacja (zwł. Linux `~/GOG/*`, ale też
+  Windows z istniejącym dyskiem lecz bez folderu) była błędnie zastępowana
+  katalogiem obok programu. Teraz katalog konfiguracyjny/domyślny jest
+  tworzony, a fallback obok programu następuje tylko gdy nie da się go utworzyć
+  (np. brak litery dysku przenośnej kopii).
+- **Instalacja z depotu raportowała sukces mimo nieudanych DLC/dodatków** —
+  worker zwraca teraz wynik uwzględniający powodzenie wszystkich zaznaczonych
+  komponentów.
+
+### Zmieniono
+- SteamGridDB: użycie jawnego `urllib.parse.quote` (spójne z resztą kodu)
+  zamiast re-eksportu `urllib.request.quote`.
+- Wydzielono `_ensure_content_dir` na poziom modułu (testowalne; bez zmiany
+  zachowania).
+
+### Testy
+- Odblokowano katalog `tests/` (usunięto z `.gitignore`) i dodano zestaw testów
+  regresyjnych (stdlib `unittest`, offline): wznawianie instalacji z depotu,
+  destrukcyjne sprzątanie orphanów, wykrywanie instalacji/DLC, ścieżki
+  per-platforma, dobór języków/plików. Uruchomienie: `python -m unittest
+  discover -s tests -t .` (22 testy).
+
+## [1.4.1] - 2026-09-15
+
+### Naprawiono
+- **DLC z plikami SFC bez kontenera nie jest już raportowane jako
+  zainstalowane** — wspólny kod pobierania depotów traktuje „są pliki sfcRef,
+  ale brak smallFilesContainer" jako błąd (parytet z instalacją bazową).
+- **Instalacja z depotu (Linux): wybór instalatora `.sh`** preferuje launcher
+  MojoSetup (`gog_*`, `setup*`, `start*`) zamiast pierwszego alfabetycznie.
+
+### Zmieniono
+- **Wspólny `_download_depot_fileset`** dla instalacji gry bazowej i DLC —
+  jedna implementacja pobierania chunków + składania kontenera SFC zamiast
+  dwóch kopii (łatwiejsze utrzymanie, spójne zachowanie).
+- Dogrywanie DLC przy świeżej instalacji dostaje **własny pasek postępu**
+  (osobny hub) zamiast reużywać zamknięty hub gry bazowej.
+- Slot postępu DLC numerowany indeksem (stabilny) zamiast `hash()` (losowy per
+  proces, możliwe kolizje).
+- Otwarcie okna pobierania robi mniej pełnych skanów biblioteki (dedup
+  `scan_games`/`scan_installed_games`).
+
 ## [1.4.0] - 2026-09-04
 
 ### Dodano

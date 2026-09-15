@@ -22,7 +22,7 @@ def _base_dirs():
     return app, res
 
 
-APP_VERSION = "1.4.0"      # see CHANGELOG.md
+APP_VERSION = "1.4.2"      # see CHANGELOG.md
 
 IS_WIN = os.name == "nt"
 # The user's platform as GOG's API names it — decides which offline installers
@@ -198,27 +198,37 @@ def _persist_dir(key: str, value: str) -> None:
     save_settings({key: value})
 
 
+def _ensure_content_dir(target: Path, fallback: Path) -> Path:
+    """Create the configured / platform-default user-content dir and return it.
+    On a fresh install the default (e.g. Linux ~/GOG/*) simply doesn't exist yet
+    — that must be created, not replaced. Only fall back next to the program when
+    the target can't be created, e.g. a portable copy whose Windows drive letter
+    is absent on this machine."""
+    try:
+        target.mkdir(parents=True, exist_ok=True)
+        return target
+    except Exception as exc:
+        log(f"dir create {target}: {exc} — używam {fallback}")
+        try:
+            fallback.mkdir(parents=True, exist_ok=True)
+        except Exception as exc2:
+            log(f"fallback dir create {fallback}: {exc2}")
+        return fallback
+
+
 def _apply_dir_settings() -> None:
     """On startup: CACHE / library / secrets stay in the program dir (never move).
-    BASE (installers) and GOG_GAMES (installed) come from settings, but if the
-    target doesn't exist we fall back to a folder inside the program dir, so a
-    freshly-copied portable install just works."""
+    BASE (installers) and GOG_GAMES (installed) come from settings; each is
+    created via _ensure_content_dir (fallback next to the program only if it
+    cannot be created)."""
     global BASE, GOG_GAMES
     st = get_settings()
     if st.get("install_dir"):
         BASE = Path(st["install_dir"])
     if st.get("games_dir"):
         GOG_GAMES = Path(st["games_dir"])
-    # Portability: create missing user-content dirs under the program directory.
-    if not BASE.exists():
-        BASE = APP_DIR / "GOGinstall"
-    if not GOG_GAMES.exists():
-        GOG_GAMES = APP_DIR / "GOG Games"
-    try:
-        BASE.mkdir(parents=True, exist_ok=True)
-        GOG_GAMES.mkdir(parents=True, exist_ok=True)
-    except Exception as exc:
-        log(f"portable dir create: {exc}")
+    BASE      = _ensure_content_dir(BASE,      APP_DIR / "GOGinstall")
+    GOG_GAMES = _ensure_content_dir(GOG_GAMES, APP_DIR / "GOG Games")
     log(f"dirs: cache={CACHE} install={BASE} games={GOG_GAMES}")
 
 
@@ -2378,29 +2388,25 @@ def _download_selection(g: dict, chosen: list) -> bool:
     return bad == 0
 
 
-def _installed_dlc_ids(game_id) -> list:
-    """DLC already installed for a game = goggame-{id}.info files present in its
-    install dir, other than the base product id."""
-    g = next((x for x in scan_games() if x["id"] == str(game_id)), None)
-    if not g:
-        return []
-    base_pid = str(g["product"].get("id") or "")
-    install_dir = scan_installed_games().get(str(game_id))
+def _installed_dlc_ids(install_dir, base_pid) -> list:
+    """DLC already installed = goggame-{id}.info files in `install_dir` other than
+    the base product id. Callers pass the dir/pid they already have (no rescan)."""
     if not install_dir:
         return []
     out = []
     for info in Path(install_dir).glob("goggame-*.info"):
         m = re.match(r"goggame-(\d+)\.info$", info.name)
-        if m and m.group(1) != base_pid:
+        if m and m.group(1) != str(base_pid):
             out.append(m.group(1))
     return out
 
 
 def get_downloads(game_id) -> dict:
-    man = get_download_manifest(game_id)
+    man = get_download_manifest(game_id)   # one scan_games() for the whole manifest
     if man.get("ok"):
-        man["installed"]     = bool(scan_installed_games().get(str(game_id)))
-        man["installed_dlc"] = _installed_dlc_ids(game_id)
+        install_dir = scan_installed_games().get(str(game_id))   # one scan, reused
+        man["installed"]     = bool(install_dir)
+        man["installed_dlc"] = _installed_dlc_ids(install_dir, man.get("game_id"))
     return man
 
 
@@ -2661,6 +2667,93 @@ def _write_depot_state(install_dir: Path, build_id: str, done: set) -> None:
         pass
 
 
+def _download_depot_fileset(plain: list, sfced: list, sfc, secure: str,
+                            install_dir: Path, conn: int, bump,
+                            tmp_name: str = "__gog_sfc.tmp",
+                            done: set | None = None, on_file_done=None) -> list:
+    """Download one depot fileset into `install_dir` over `secure`: parallel chunk
+    fetch for regular files + Small-Files-Container assembly. Shared by the base
+    game and DLC installs so the logic lives in one place. Returns a list of
+    (rel, exc) errors (empty = success). When `done` is given, rel paths already
+    in it are skipped, and `on_file_done(rel)` is called as each file completes
+    (the base game uses that to persist resumable state)."""
+    errs: list = []
+    jobs, remaining = [], {}
+    for f in plain:
+        rel  = f["path"].replace("\\", "/").lstrip("/")
+        dest = install_dir / rel
+        chunks = f.get("chunks") or []
+        if done is not None and rel in done:
+            continue
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        if not chunks:                       # empty file
+            dest.touch(exist_ok=True)
+            if on_file_done:
+                on_file_done(rel)
+            continue
+        with open(dest, "wb") as fh:         # pre-allocate
+            fh.truncate(sum(c.get("size") or 0 for c in chunks))
+        off = 0
+        for c in chunks:
+            jobs.append((rel, dest, off, c))
+            off += c.get("size") or 0
+        remaining[rel] = len(chunks)
+
+    state_lock = threading.Lock()
+
+    def _cj(rel, dest, off, c):
+        if _cancel.is_set() or errs:
+            return
+        try:
+            data = _fetch_chunk(secure, c["compressedMd5"])
+            with open(dest, "r+b") as fh:
+                fh.seek(off)
+                fh.write(data)
+            bump(len(data))
+            with state_lock:
+                remaining[rel] -= 1
+                if remaining[rel] == 0 and on_file_done:
+                    on_file_done(rel)
+        except Exception as exc:
+            errs.append((rel, exc))
+
+    if jobs:
+        with ThreadPoolExecutor(max_workers=conn) as ex:
+            for fu in as_completed([ex.submit(_cj, *j) for j in jobs]):
+                fu.result()
+
+    # Small Files Container — one blob split into many tiny files.
+    if sfced and not _cancel.is_set() and not errs:
+        if not sfc:
+            errs.append(("SFC", RuntimeError("pliki wskazują na kontener SFC, "
+                                             "ale manifest go nie zawiera")))
+        else:
+            tmp = install_dir / tmp_name
+            try:
+                with open(tmp, "wb") as fh:
+                    for c in sfc.get("chunks") or []:
+                        fh.write(_fetch_chunk(secure, c["compressedMd5"]))
+                        bump(c.get("size") or 0)
+                with open(tmp, "rb") as fh:
+                    for f in sfced:
+                        rel  = f["path"].replace("\\", "/").lstrip("/")
+                        dest = install_dir / rel
+                        dest.parent.mkdir(parents=True, exist_ok=True)
+                        ref = f["sfcRef"]
+                        fh.seek(ref["offset"])
+                        dest.write_bytes(fh.read(ref["size"]))
+                        if on_file_done:
+                            on_file_done(rel)
+            except Exception as exc:
+                errs.append(("SFC", exc))
+            finally:
+                try:
+                    tmp.unlink()
+                except Exception:
+                    pass
+    return errs
+
+
 def _install_dlc_via_depots(meta: dict, dlc_ids: set, install_dir: Path,
                             base_pid: str, box: dict, hub: "_ProgressHub",
                             conn: int, wanted: set | None = None) -> tuple[bool, set]:
@@ -2672,7 +2765,7 @@ def _install_dlc_via_depots(meta: dict, dlc_ids: set, install_dir: Path,
     all_depots = meta.get("depots") or []
     ok_all, installed = True, set()
 
-    for did in sorted(dlc_ids):
+    for idx, did in enumerate(sorted(dlc_ids)):
         depots = [d for d in all_depots if str(d.get("productId")) == str(did)]
         chosen = [d for d in depots if _lang_match(d.get("languages"), wanted)] or depots
         if not chosen:
@@ -2714,7 +2807,7 @@ def _install_dlc_via_depots(meta: dict, dlc_ids: set, install_dir: Path,
         total += sum(c.get("size") or 0 for c in (sfc.get("chunks") if sfc else []) or [])
         _push_log(f"Instaluję DLC {did}: {len(files)} plików, {_human(total)}…")
 
-        sid = 90000 + (abs(hash(str(did))) % 1000)
+        sid = 90000 + idx          # unique per DLC (index — not a randomized hash)
         hub.start(sid, f"DLC {did}", total)
         got, clk = {"n": 0}, threading.Lock()
 
@@ -2723,69 +2816,14 @@ def _install_dlc_via_depots(meta: dict, dlc_ids: set, install_dir: Path,
                 got["n"] += n
             hub.progress(_sid, got["n"])
 
-        jobs = []
-        for f in plain:
-            rel  = f["path"].replace("\\", "/").lstrip("/")
-            dest = install_dir / rel
-            dest.parent.mkdir(parents=True, exist_ok=True)
-            chunks = f.get("chunks") or []
-            if not chunks:
-                dest.touch(exist_ok=True)
-                continue
-            with open(dest, "wb") as fh:
-                fh.truncate(sum(c.get("size") or 0 for c in chunks))
-            off = 0
-            for c in chunks:
-                jobs.append((dest, off, c))
-                off += c.get("size") or 0
-
-        errs = []
-
-        def cj(dest, off, c):
-            if _cancel.is_set() or errs:
-                return
-            try:
-                data = _fetch_chunk(secure, c["compressedMd5"])
-                with open(dest, "r+b") as fh:
-                    fh.seek(off)
-                    fh.write(data)
-                bump(len(data))
-            except Exception as exc:
-                errs.append(exc)
-
-        if jobs:
-            with ThreadPoolExecutor(max_workers=conn) as ex:
-                for fu in as_completed([ex.submit(cj, *j) for j in jobs]):
-                    fu.result()
-
-        if sfced and sfc and not errs and not _cancel.is_set():
-            tmp = install_dir / f"__gog_sfc_{did}.tmp"
-            try:
-                with open(tmp, "wb") as fh:
-                    for c in sfc.get("chunks") or []:
-                        fh.write(_fetch_chunk(secure, c["compressedMd5"]))
-                        bump(c.get("size") or 0)
-                with open(tmp, "rb") as fh:
-                    for f in sfced:
-                        rel  = f["path"].replace("\\", "/").lstrip("/")
-                        dest = install_dir / rel
-                        dest.parent.mkdir(parents=True, exist_ok=True)
-                        ref = f["sfcRef"]
-                        fh.seek(ref["offset"])
-                        dest.write_bytes(fh.read(ref["size"]))
-            except Exception as exc:
-                errs.append(exc)
-            finally:
-                try:
-                    tmp.unlink()
-                except Exception:
-                    pass
+        errs = _download_depot_fileset(plain, sfced, sfc, secure, install_dir, conn,
+                                       bump, tmp_name=f"__gog_sfc_{did}.tmp")
 
         hub.finish(sid, not errs)
         if _cancel.is_set():
             return (False, installed)
         if errs:
-            _push_log(f"✗ DLC {did}: {errs[0]}")
+            _push_log(f"✗ DLC {did}: {errs[0][1]}")
             ok_all = False
             continue
 
@@ -2896,6 +2934,11 @@ def _depot_install_worker(game_id, extra_keys: list, langs: list | None = None) 
     for d in dirs:
         (install_dir / d["path"].replace("\\", "/")).mkdir(parents=True, exist_ok=True)
     done = _read_depot_state(install_dir, build_id)
+    # Write the in-progress marker BEFORE any depot file lands. Some depots ship
+    # a goggame-*.info among their files; if the process died after that but
+    # before the first state write, scan_installed_games would treat the partial
+    # directory as a finished install and refuse to resume it.
+    _write_depot_state(install_dir, build_id, done)
     if done:
         _push_log(f"Wznawiam — {len(done)} plików już ukończonych.")
 
@@ -2910,64 +2953,23 @@ def _depot_install_worker(game_id, extra_keys: list, langs: list | None = None) 
     counter = {"got": sum(sum(c.get("size") or 0 for c in f.get("chunks") or [])
                           for f in plain if f["path"] in done)}
     clock = threading.Lock()
-    state_lock = threading.Lock()
 
     def bump(n: int):
         with clock:
             counter["got"] += n
         hub.progress(1, counter["got"])
 
-    # 4. Regular files — flat chunk job list, shared connection budget ----------
-    jobs = []            # (path_str, dest, offset, chunk)
-    remaining = {}       # path_str -> chunk count
-    for f in plain:
-        rel  = f["path"].replace("\\", "/").lstrip("/")
-        dest = install_dir / rel
-        chunks = f.get("chunks") or []
-        size   = sum(c.get("size") or 0 for c in chunks)
-        if rel in done:
-            continue
-        if not chunks:                       # empty file
-            dest.parent.mkdir(parents=True, exist_ok=True)
-            dest.touch(exist_ok=True)
-            done.add(rel)
-            continue
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        with open(dest, "wb") as fh:         # pre-allocate
-            fh.truncate(size)
-        off = 0
-        for c in chunks:
-            jobs.append((rel, dest, off, c))
-            off += c.get("size") or 0
-        remaining[rel] = len(chunks)
-
+    # 4-5. Regular files + Small Files Container — shared with DLC installs.
     conn = get_download_threads()
-    err_box = []
 
-    def chunk_job(rel, dest, off, c):
-        if _cancel.is_set() or err_box:
-            return
-        try:
-            data = _fetch_chunk(secure, c["compressedMd5"])
-            with open(dest, "r+b") as fh:
-                fh.seek(off)
-                fh.write(data)
-            bump(len(data))
-            with state_lock:
-                remaining[rel] -= 1
-                if remaining[rel] == 0:
-                    done.add(rel)
-                    _write_depot_state(install_dir, build_id, done)
-        except Exception as exc:
-            err_box.append((rel, exc))
+    def _on_file_done(rel):
+        done.add(rel)
+        _write_depot_state(install_dir, build_id, done)
 
-    ok = True
-    if jobs:
-        _push_log(f"Pobieram {len(jobs)} chunków ({conn} połączeń)…")
-        with ThreadPoolExecutor(max_workers=conn) as ex:
-            futs = [ex.submit(chunk_job, *j) for j in jobs]
-            for fu in as_completed(futs):
-                fu.result()
+    _push_log(f"Pobieram pliki gry ({conn} połączeń)…")
+    err_box = _download_depot_fileset(plain, sfced, sfc, secure, install_dir, conn,
+                                      bump, done=done, on_file_done=_on_file_done)
+    ok = not err_box
     if _cancel.is_set():
         _write_depot_state(install_dir, build_id, done)
         hub.finish(1, False)
@@ -2980,35 +2982,6 @@ def _depot_install_worker(game_id, extra_keys: list, langs: list | None = None) 
             _push_log(f"✗ {rel}: {exc}")
         _push_log("✗ Instalacja niekompletna — uruchom ponownie, aby wznowić.")
         return False
-
-    # 5. Small Files Container --------------------------------------------------
-    if sfced:
-        if not sfc:
-            _push_log("✗ Pliki wskazują na kontener SFC, ale manifest go nie zawiera.")
-            ok = False
-        else:
-            _push_log(f"Składam kontener małych plików ({len(sfced)} plików)…")
-            tmp = install_dir / "__gog_sfc.tmp"
-            try:
-                with open(tmp, "wb") as fh:
-                    for c in sfc.get("chunks") or []:
-                        fh.write(_fetch_chunk(secure, c["compressedMd5"]))
-                        bump(c.get("size") or 0)
-                with open(tmp, "rb") as fh:
-                    for f in sfced:
-                        rel  = f["path"].replace("\\", "/").lstrip("/")
-                        dest = install_dir / rel
-                        dest.parent.mkdir(parents=True, exist_ok=True)
-                        ref = f["sfcRef"]
-                        fh.seek(ref["offset"])
-                        dest.write_bytes(fh.read(ref["size"]))
-                        done.add(rel)
-            except Exception as exc:
-                _push_log(f"✗ SFC: {exc}")
-                ok = False
-            finally:
-                try: tmp.unlink()
-                except Exception: pass
 
     # 5b. Redist dependencies (DOSBox / ScummVM / … — DOS & wrapped games) -------
     # Native Windows games declare none; DOS games ship their runtime here, so
@@ -3102,11 +3075,19 @@ def _depot_install_worker(game_id, extra_keys: list, langs: list | None = None) 
     # 6c. Selected DLC — installed INTO the game dir from their depots -----------
     dlc_ids = {k.split(":")[1] for k in (extra_keys or [])
                if isinstance(k, str) and k.startswith("dlc:") and len(k.split(":")) > 1 and k.split(":")[1]}
+    # The base game is installed; track whether every REQUESTED extra piece
+    # (DLC, extras, language packs) also succeeded so the task doesn't report a
+    # clean success while selected content is missing.
+    extras_ok = True
     if dlc_ids:
         _push_log(f"Instaluję zaznaczone DLC ({len(dlc_ids)}) z depotów…")
+        # Fresh hub — the base-game hub above is already finished and its grand
+        # total is the base size, so reusing it would skew DLC progress.
+        dlc_hub = _ProgressHub(0)
         dlc_ok, _ = _install_dlc_via_depots(meta, dlc_ids, install_dir, pid, box,
-                                            hub, get_download_threads(), wanted)
+                                            dlc_hub, get_download_threads(), wanted)
         if not dlc_ok:
+            extras_ok = False
             _push_log("⚠ Część DLC nie zainstalowała się poprawnie.")
 
     # 7. Optional extras / language packs via the classic downlink path ----------
@@ -3121,8 +3102,9 @@ def _depot_install_worker(game_id, extra_keys: list, langs: list | None = None) 
         if chosen:
             _push_log(f"Pobieram dodatki ({len(chosen)} poz.)…")
             if not _download_selection(g, chosen):
+                extras_ok = False
                 _push_log("⚠ Gra zainstalowana, ale część dodatków nie pobrała się poprawnie.")
-    return True
+    return extras_ok
 
 
 def install_game(game_id, extra_keys=None, langs=None) -> dict:
@@ -3605,7 +3587,10 @@ def run_installer(game_id) -> dict:
                         "To instalator windowsowy (.exe) — na Linuksie "
                         "rozpakuj go przez innoextract albo uruchom w Wine"}
             return {"ok": False, "error": "Nie znaleziono instalatora .sh"}
-        sh = shs[0]
+        # GOG's MojoSetup launcher is the "gog_<slug>_*.sh" / "start.sh"; prefer it
+        # over any helper script that happens to sort earlier alphabetically.
+        sh = next((s for s in shs if re.match(r"(gog[_-]|setup|start)", s.name, re.I)),
+                  shs[0])
         try:
             os.chmod(sh, os.stat(sh).st_mode | 0o111)
         except OSError:
@@ -3671,7 +3656,7 @@ def _name_similarity(a: str, b: str) -> float:
 
 
 def _sgdb_search(query: str, max_results: int = 8) -> list:
-    enc = urllib.request.quote(query)
+    enc = urllib.parse.quote(query)
     obj = _sgdb_get(f"{SGDB_BASE}/search/autocomplete/{enc}")
     return (obj.get("data") or [])[:max_results] if obj else []
 
