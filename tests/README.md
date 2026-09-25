@@ -17,6 +17,7 @@ python -m unittest discover -s tests -t .
 
 | Plik | Obszar |
 |------|--------|
+| `test_depot_download.py` | wspólny pobieracz depotów (sieć podstawiona) — składanie plików i SFC, zapis stanu tylko po plikach chunkowanych, wznawianie, SFC osobno dla każdego depotu, `_parse_dlc_ids` |
 | `test_depot_state.py` | wznawianie instalacji z depotu — marker `_goginstall_state.json` (round-trip, mismatch builda, zapis „z góry") |
 | `test_orphans.py` | **destrukcyjny** updater — `_cleanup_orphans` kasuje tylko osierocone pliki, chroni oczekiwane i rozpakowane podkatalogi, działa wyłącznie pod `BASE` |
 | `test_scan.py` | wykrywanie instalacji/DLC — instalacja w toku (marker) nie liczy się jako ukończona; `_installed_dlc_ids` po `goggame-{id}.info` |

@@ -30,6 +30,27 @@ class EnsureContentDir(unittest.TestCase):
             self.assertTrue(fallback.is_dir())
 
 
+class MachineSpecificDefault(unittest.TestCase):
+    """Regression (1.4.3): a machine-specific built-in default (the Windows
+    D:\\GOGinstall) must not be planted on another user's drive — use it only if
+    it already exists, otherwise stay portable."""
+    def test_missing_default_is_not_created(self):
+        with tempfile.TemporaryDirectory() as d:
+            target = Path(d) / "GOGinstall"
+            fallback = Path(d) / "portable"
+            got = app._ensure_content_dir(target, fallback, create=False)
+            self.assertEqual(got, fallback)
+            self.assertFalse(target.exists())
+            self.assertTrue(fallback.is_dir())
+
+    def test_existing_default_is_used(self):
+        with tempfile.TemporaryDirectory() as d:
+            target = Path(d) / "GOGinstall"
+            target.mkdir()
+            got = app._ensure_content_dir(target, Path(d) / "portable", create=False)
+            self.assertEqual(got, target)
+
+
 class PlatformDefaults(unittest.TestCase):
     def test_my_os_known(self):
         self.assertIn(app._MY_OS, ("windows", "linux"))

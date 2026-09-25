@@ -4,6 +4,37 @@ Wszystkie istotne zmiany w projekcie **GOG Library Manager** (gogv2).
 Format oparty na [Keep a Changelog](https://keepachangelog.com/pl/1.1.0/),
 wersjonowanie wg [SemVer](https://semver.org/lang/pl/).
 
+## [1.4.3] - 2026-09-25
+
+### Naprawiono
+- **Uszkodzone małe pliki przy instalacji z kilku depotów** — kontener małych
+  plików (SFC) brany był tylko z pierwszego depotu, a pliki z kolejnych
+  (np. dodatkowy język) wycinane z niewłaściwego kontenera. Każdy depot jest
+  teraz pobierany osobno ze swoim własnym SFC (`_collect_depot_groups`).
+- **Wolna faza SFC** — plik stanu wznawiania był przepisywany w całości po
+  każdym małym pliku (tysiące zapisów). Teraz zapis tylko po plikach
+  pobieranych chunkami; SFC i tak składany jest od nowa przy wznowieniu.
+- **Domyślny `D:\GOGinstall` zakładany na cudzych komputerach** — windowsowe
+  domyślne katalogi są używane tylko, gdy już istnieją (inaczej folder obok
+  programu); tworzone są wyłącznie katalogi ustawione jawnie oraz domyślne
+  linuksowe `~/GOG/*`.
+- Pasek postępu przy **wznawianiu** instalacji startował od 0 (porównanie
+  nieznormalizowanych ścieżek) i nie dochodził do 100%.
+- Pasek zbiorczy DLC pokazywał „X / 0 B" — rozmiar DLC wliczany do sumy.
+- Linux: wybór instalatora `.sh` — największy plik (samorozpakowujące
+  archiwum MojoSetup), bo nowe nazwy nie mają stałego prefiksu.
+
+### Zmieniono
+- Zależności redist (DOSBox/ScummVM) pobierane tym samym
+  `_download_depot_fileset` co gra i DLC (koniec osobnej pętli).
+- Wspólne helpery `_parse_dlc_ids`, `_depot_rel`, `_group_total` zamiast
+  zdublowanego kodu.
+
+### Testy
+- 9 nowych testów (razem 31): składanie plików i SFC, liczba zapisów stanu,
+  wznawianie, SFC osobno dla każdego depotu, parsowanie ID DLC, domyślny
+  katalog windowsowy nie jest zakładany.
+
 ## [1.4.2] - 2026-09-15
 
 ### Naprawiono
