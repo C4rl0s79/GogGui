@@ -1230,7 +1230,7 @@ const I18N = {
     'set.reset':'Domyślne','set.close':'✕','set.fetchRatings':'⭐ Pobierz oceny GOG','set.fetchRatingsNote':'Pobiera oceny użytkowników GOG (0–5) dla sortowania „Ocena GOG" — bez pełnej synchronizacji.','set.fetchPurchase':'🛒 Pobierz daty zakupu','set.fetchPurchaseNote':'Pobiera kolejność zakupów z GOG (jak „by purchase date" na stronie) dla sortowania „Data zakupu".',
     'dl.titleDownload':'Pobierz','dl.titleInstall':'⚡ Instaluj (depot)','dl.loading':'Wczytywanie listy plików z GOG…',
     'dl.goDownload':'⬇ Pobierz zaznaczone','dl.goInstall':'⚡ Instaluj','dl.goDlc':'➕ Dograj DLC','dl.titleDlc':'➕ Dograj DLC (depot)','dl.dlcNote':'Zaznaczone DLC zostaną zainstalowane z depotów Galaxy prosto do katalogu zainstalowanej gry.','dl.emptyDlc':'Ta gra nie ma DLC dostępnych w depotach.','dl.cancel':'✕ Anuluj',
-    'dl.selected':'Zaznaczono','dl.items':'({n} poz.)','dl.recommended':'✨ Zalecane','dl.selectAll':'Zaznacz wszystko','dl.languages':'Języki (depot)',
+    'dl.selected':'Zaznaczono','dl.items':'({n} poz.)','dl.recommended':'✨ Zalecane','dl.selectAll':'Zaznacz wszystko','dl.languages':'Języki (depot)','dl.primaryLang':'Język gry (główny):',
     'dl.installNote':'Gra zostanie zainstalowana bezpośrednio z depotów Galaxy (bez pobierania instalatora). Poniżej możesz opcjonalnie zaznaczyć dodatki do pobrania.',
     'dl.empty':'Brak plików do pobrania dla tej gry.','dl.emptyInstall':'Brak dodatków — gra zostanie zainstalowana bez extras.',
     'dl.loadError':'Nie udało się pobrać listy plików.',
@@ -1304,7 +1304,7 @@ const I18N = {
     'set.reset':'Defaults','set.close':'✕','set.fetchRatings':'⭐ Fetch GOG ratings','set.fetchRatingsNote':'Fetches GOG user ratings (0–5) for the "GOG rating" sort — without a full sync.','set.fetchPurchase':'🛒 Fetch purchase dates','set.fetchPurchaseNote':'Fetches your GOG purchase order (like the site\'s "by purchase date") for the "Purchase date" sort.',
     'dl.titleDownload':'Download','dl.titleInstall':'⚡ Install (depot)','dl.loading':'Loading file list from GOG…',
     'dl.goDownload':'⬇ Download selected','dl.goInstall':'⚡ Install','dl.goDlc':'➕ Add DLC','dl.titleDlc':'➕ Add DLC (depot)','dl.dlcNote':'Selected DLC will be installed from Galaxy depots straight into the installed game folder.','dl.emptyDlc':'This game has no DLC available in depots.','dl.cancel':'✕ Cancel',
-    'dl.selected':'Selected','dl.items':'({n} items)','dl.recommended':'✨ Recommended','dl.selectAll':'Select all','dl.languages':'Languages (depot)',
+    'dl.selected':'Selected','dl.items':'({n} items)','dl.recommended':'✨ Recommended','dl.selectAll':'Select all','dl.languages':'Languages (depot)','dl.primaryLang':'Game language (primary):',
     'dl.installNote':'The game will be installed straight from Galaxy depots (no installer download). Optionally pick extras to download below.',
     'dl.empty':'No files to download for this game.','dl.emptyInstall':'No extras — the game will install without extras.',
     'dl.loadError':'Could not load the file list.',
@@ -2673,14 +2673,23 @@ async function openDownloadModal(g, mode = 'download') {
       const bl = await call('get_build_languages', String(g.id));
       if (bl && bl.ok && Array.isArray(bl.languages) && bl.languages.length) avail = bl.languages;
     } catch (e) { console.warn('build langs', e); }
-    const def = new Set((cfg.depot_langs || ['en']).map(x => String(x).toLowerCase()));
+    const prefs = (cfg.depot_langs || ['en']).map(x => String(x).toLowerCase());
+    const def = new Set(prefs);
     // If none of the defaults exist for this game, fall back to the first available.
     if (![...def].some(d => avail.includes(d))) def.clear(), def.add(avail[0]);
+    // Game (primary) language: decides which version wins when several language
+    // depots ship the same file (e.g. goggame-*.info / .script) — first preferred
+    // language this build has.
+    const primary = prefs.find(l => avail.includes(l)) || [...def][0];
     html += `<div class="dl-group"><div class="dl-group-head">
         <span class="dl-group-title">${t('dl.languages')}</span></div>
       <div class="dl-langs">` +
       avail.map(code => `<label class="dl-lang"><input type="checkbox" class="dl-lang-cb" value="${esc(code)}" ${def.has(code) ? 'checked' : ''}> ${esc(_langName(code))}</label>`).join('') +
-      `</div></div>`;
+      `</div>
+      <div class="dl-langs" style="margin-top:8px"><label class="dl-lang">${t('dl.primaryLang')}
+        <select id="dlPrimaryLang">` +
+      avail.map(code => `<option value="${esc(code)}" ${code === primary ? 'selected' : ''}>${esc(_langName(code))}</option>`).join('') +
+      `</select></label></div></div>`;
   }
 
   const sections = dlc
@@ -2777,7 +2786,11 @@ function _selectedDlKeys() {
 }
 
 function _selectedDlLangs() {
-  return Array.from(document.querySelectorAll('.dl-lang-cb:checked')).map(cb => cb.value);
+  // Primary (game) language FIRST — the backend treats langs[0] as the game
+  // language; it is always included even if its checkbox was left unchecked.
+  const sel  = Array.from(document.querySelectorAll('.dl-lang-cb:checked')).map(cb => cb.value);
+  const prim = document.getElementById('dlPrimaryLang')?.value;
+  return prim ? [prim, ...sel.filter(l => l !== prim)] : sel;
 }
 
 const _LANG_NAMES = {

@@ -4,6 +4,35 @@ Wszystkie istotne zmiany w projekcie **GOG Library Manager** (gogv2).
 Format oparty na [Keep a Changelog](https://keepachangelog.com/pl/1.1.0/),
 wersjonowanie wg [SemVer](https://semver.org/lang/pl/).
 
+## [1.4.4] - 2026-10-06
+
+### Naprawiono
+- **Instalacja z kilkoma językami nadpisywała pliki gry wariantami innych
+  języków** (Wiedźmin 3: każdy depot językowy ma własne `goggame-*.info`,
+  `.hashdb`, `.script`). Teraz dla ścieżki obecnej w kilku depotach zostaje
+  jedna wersja: języka głównego, potem wspólna (`*`); wariant przeznaczony tylko
+  dla innych języków jest pomijany (inaczej przełączałby język gry).
+- **Uruchamianie gier z zewnętrznym launcherem** — gdy GOG oznacza launcher jako
+  zadanie główne (Wiedźmin 3 next-gen: `REDprelauncher.exe`, wymagający
+  REDlaunchera z MSI, którego instalacja z depotu nie uruchamia), program
+  uruchamia plik gry (`bin/x64_dx12/witcher3.exe`).
+- **Akcje `setIni` z `goggame-*.script` są wykonywane** po instalacji (np. język
+  lektora w `Dokumenty\The Witcher 3\user.settings`; `{userdocs}` = folder
+  Dokumenty, także przekierowany do OneDrive). `setRegistry` (HKLM, wymaga
+  admina) jest tylko logowane.
+
+### Dodano
+- Okno instalacji: wybór **języka gry (głównego)** obok listy języków.
+
+### Testy
+- 10 nowych (razem 41): kolizje plików między depotami językowymi, wybór pliku
+  uruchamiania, `setIni` (z zachowaniem pozostałych linii i końców linii).
+
+### Uwaga dla instalacji z 1.4.2 i starszych
+- Gry zainstalowane z depotu, które miały kilka depotów z kontenerem małych
+  plików (np. Wiedźmin 3), mają uszkodzone małe pliki (błąd naprawiony w 1.4.3)
+  — wymagają reinstalacji albo naprawy.
+
 ## [1.4.3] - 2026-09-25
 
 ### Naprawiono

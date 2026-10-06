@@ -22,7 +22,7 @@ def _base_dirs():
     return app, res
 
 
-APP_VERSION = "1.4.3"      # see CHANGELOG.md
+APP_VERSION = "1.4.4"      # see CHANGELOG.md
 
 IS_WIN = os.name == "nt"
 # The user's platform as GOG's API names it — decides which offline installers
@@ -2576,21 +2576,74 @@ def _dependency_items(dep_ids: list) -> tuple[list, list, set]:
     return files, dirs, (want - matched)
 
 
+def _user_documents() -> Path:
+    """The user's Documents folder (honours a redirected/OneDrive 'Personal')."""
+    if IS_WIN:
+        try:
+            import winreg
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER,
+                                r"Software\Microsoft\Windows\CurrentVersion\Explorer"
+                                r"\User Shell Folders") as k:
+                v, _ = winreg.QueryValueEx(k, "Personal")
+            if v:
+                return Path(os.path.expandvars(v))
+        except Exception:
+            pass
+    return Path.home() / "Documents"
+
+
+def _ini_set(path: Path, section: str, key: str, value: str) -> None:
+    """Set one key in an INI-style file, preserving every other line/byte.
+    Creates the file/section when missing (what Galaxy's setIni does)."""
+    raw = path.read_bytes().decode("latin-1") if path.exists() else ""
+    nl = "\r\n" if "\r\n" in raw or not raw else "\n"
+    lines = raw.splitlines()
+    sec_hdr = f"[{section}]".lower()
+    start = next((i for i, l in enumerate(lines) if l.strip().lower() == sec_hdr), None)
+    if start is None:
+        if lines and lines[-1].strip():
+            lines.append("")
+        lines += [f"[{section}]", f"{key}={value}"]
+    else:
+        end = next((i for i in range(start + 1, len(lines))
+                    if lines[i].strip().startswith("[")), len(lines))
+        hit = next((i for i in range(start + 1, end)
+                    if lines[i].split("=", 1)[0].strip().lower() == key.lower()), None)
+        if hit is not None:
+            lines[hit] = f"{key}={value}"
+        else:
+            ins = end
+            while ins > start + 1 and not lines[ins - 1].strip():
+                ins -= 1
+            lines.insert(ins, f"{key}={value}")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes((nl.join(lines) + nl).encode("latin-1", errors="replace"))
+
+
 def _apply_support_data(install_dir: Path, pid: str) -> None:
-    """Replay the 'supportData' file/folder copies from goggame-{pid}.script.
-    GOG's installer copies DOSBox/ScummVM .conf files out of a support subfolder
-    (usually 'app\\') into the game root so the playTasks arguments like
-    '-conf "..\\dosboxXX.conf"' resolve.  Depot installs bypass that installer,
-    so without this the runtime has no config and the game won't start."""
+    """Replay the user-level actions of goggame-{pid}.script that GOG's installer
+    would run — a depot install bypasses that installer:
+      • supportData — copy DOSBox/ScummVM .conf etc. out of a support subfolder
+        (usually 'app\\') into the game root, so playTask arguments like
+        '-conf "..\\dosboxXX.conf"' resolve (otherwise the game won't start);
+      • setIni — per-user settings such as the game/voice language
+        (The Witcher 3: Documents\\The Witcher 3\\user.settings SpeechLanguage).
+    setRegistry targets HKLM (needs admin) and is only logged, not applied."""
     scr = install_dir / f"goggame-{pid}.script"
     if not scr.exists():
         scr = next(install_dir.glob("goggame-*.script"), None)
     if not scr or not scr.exists():
         return
 
+    docs = None
+
     def _resolve(s: str) -> Path:
+        nonlocal docs
         s = (s or "").replace("{app}", str(install_dir)) \
                      .replace("{supportDir}", str(install_dir))
+        if "{userdocs}" in s:
+            docs = docs or _user_documents()
+            s = s.replace("{userdocs}", str(docs))
         return Path(s.replace("/", os.sep).replace("\\", os.sep))
 
     try:
@@ -2600,9 +2653,27 @@ def _apply_support_data(install_dir: Path, pid: str) -> None:
         return
     for act in data.get("actions") or []:
         ins = act.get("install") or {}
-        if ins.get("action") != "supportData":
-            continue
+        kind = ins.get("action")
         args = ins.get("arguments") or {}
+        if kind == "setIni":
+            fn = args.get("filename") or ""
+            if "{" in _resolve(fn).as_posix():           # unknown placeholder
+                log(f"setIni: pomijam (nieznana ścieżka) {fn}")
+                continue
+            try:
+                _ini_set(_resolve(fn), str(args.get("section") or ""),
+                         str(args.get("keyName") or ""), str(args.get("keyValue") or ""))
+                log(f"setIni: {_resolve(fn)} [{args.get('section')}] "
+                    f"{args.get('keyName')}={args.get('keyValue')}")
+            except Exception as exc:
+                log(f"setIni error ({fn}): {exc}")
+            continue
+        if kind == "setRegistry":
+            log(f"setRegistry pominięte (wymaga admina): {args.get('valueName')}="
+                f"{args.get('valueData')}")
+            continue
+        if kind != "supportData":
+            continue
         typ  = (args.get("type") or "").lower()
         src  = _resolve(args.get("source"))
         dst  = _resolve(args.get("target"))
@@ -2727,10 +2798,57 @@ def _collect_depot_groups(depots: list) -> list:
 
 
 def _group_total(g: dict) -> int:
-    """Bytes to download for one depot group (regular chunks + its SFC)."""
+    """Bytes to download for one depot group (regular chunks + its SFC — the
+    container is fetched only when the group still has SFC files to extract)."""
     n = sum(sum(c.get("size") or 0 for c in f.get("chunks") or []) for f in g["plain"])
-    n += sum(c.get("size") or 0 for c in ((g["sfc"] or {}).get("chunks") or []))
+    if g["sfced"]:
+        n += sum(c.get("size") or 0 for c in ((g["sfc"] or {}).get("chunks") or []))
     return n
+
+
+def _resolve_depot_conflicts(groups: list, depots: list, primary: str) -> int:
+    """The same path can ship in several selected depots — e.g. every language
+    depot of The Witcher 3 carries its own goggame-*.info / .hashdb / .script
+    (they set the game language). Installing several languages at once made them
+    overwrite each other (1.4.2: interleaved, unusable bytes). Keep exactly ONE
+    version per path:
+      1. the depot of the PRIMARY language, else
+      2. the language-neutral ('*') depot, else
+      3. none — a variant meant only for other languages (installing it would
+         switch the game to that language).
+    Paths owned by a single depot are untouched. Filters `groups` in place and
+    returns how many duplicate entries were dropped."""
+    prim = _norm_lang(primary) if primary else ""
+
+    def langs_of(gi: int) -> set:
+        return {("*" if l == "*" else _norm_lang(l))
+                for l in (depots[gi].get("languages") or [])}
+
+    owners: dict = {}
+    for gi, g in enumerate(groups):
+        for f in g["plain"] + g["sfced"]:
+            owners.setdefault(_depot_rel(f["path"]).lower(), []).append(gi)
+    winner = {}
+    for rel, gis in owners.items():
+        if len(set(gis)) < 2:
+            continue
+        pri = [gi for gi in gis if prim and prim in langs_of(gi)]
+        neu = [gi for gi in gis if "*" in langs_of(gi)]
+        winner[rel] = pri[-1] if pri else (neu[-1] if neu else None)
+    if not winner:
+        return 0
+    dropped = 0
+    for gi, g in enumerate(groups):
+        for key in ("plain", "sfced"):
+            kept = []
+            for f in g[key]:
+                rel = _depot_rel(f["path"]).lower()
+                if rel in winner and winner[rel] != gi:
+                    dropped += 1
+                    continue
+                kept.append(f)
+            g[key] = kept
+    return dropped
 
 
 def _download_depot_fileset(plain: list, sfced: list, sfc, secure: str,
@@ -2825,7 +2943,8 @@ def _download_depot_fileset(plain: list, sfced: list, sfc, secure: str,
 
 def _install_dlc_via_depots(meta: dict, dlc_ids: set, install_dir: Path,
                             base_pid: str, box: dict, hub: "_ProgressHub",
-                            conn: int, wanted: set | None = None) -> tuple[bool, set]:
+                            conn: int, wanted: set | None = None,
+                            primary: str = "") -> tuple[bool, set]:
     """Install selected DLC INTO the game directory from the build's DLC depots
     (the way GOG Galaxy does), instead of dropping a separate offline installer
     in GOGinstall. DLC are separate products, so each depot's chunks use that
@@ -2843,6 +2962,7 @@ def _install_dlc_via_depots(meta: dict, dlc_ids: set, install_dir: Path,
 
         try:
             groups = _collect_depot_groups(chosen)
+            _resolve_depot_conflicts(groups, chosen, primary or next(iter(sorted(wanted or {"en"}))))
         except Exception as exc:
             _push_log(f"✗ DLC {did}: manifest depotu: {exc}")
             ok_all = False
@@ -2913,7 +3033,9 @@ def _depot_install_worker(game_id, extra_keys: list, langs: list | None = None) 
     if not g:
         _push_log("✗ Gra nie znaleziona.")
         return False
-    wanted = {str(l).lower() for l in (langs or _depot_langs_setting())}
+    lang_list = [str(l).lower() for l in (langs or _depot_langs_setting())]
+    wanted  = set(lang_list)
+    primary = lang_list[0]          # first = game language (wins file conflicts)
     installed = scan_installed_games()
     if g["id"] in installed:
         _push_log(f"✗ Gra jest już zainstalowana: {installed[g['id']]}")
@@ -2948,7 +3070,7 @@ def _depot_install_worker(game_id, extra_keys: list, langs: list | None = None) 
                   "zainstaluję je po plikach gry.")
 
     # 2. Depot manifests (base game, chosen languages + language-neutral) -------
-    _push_log(f"Języki instalacji: {', '.join(sorted(wanted))}")
+    _push_log(f"Języki instalacji: {', '.join(lang_list)} (główny: {primary})")
     depots = [d for d in (meta.get("depots") or []) if str(d.get("productId")) == pid]
     chosen_depots = [d for d in depots if _lang_match(d.get("languages"), wanted)]
     if not chosen_depots:
@@ -2963,6 +3085,10 @@ def _depot_install_worker(game_id, extra_keys: list, langs: list | None = None) 
     except Exception as exc:
         _push_log(f"✗ Błąd pobierania manifestów depotów: {exc}")
         return False
+    nd = _resolve_depot_conflicts(groups, chosen_depots, primary)
+    if nd:
+        _push_log(f"Pliki w wielu depotach językowych: pominięto {nd} wariantów "
+                  f"(zostaje wersja języka głównego: {primary}).")
 
     total  = sum(_group_total(grp) for grp in groups)
     n_sfc  = sum(len(grp["sfced"]) for grp in groups)
@@ -3119,7 +3245,8 @@ def _depot_install_worker(game_id, extra_keys: list, langs: list | None = None) 
         # total is the base size, so reusing it would skew DLC progress.
         dlc_hub = _ProgressHub(0)
         dlc_ok, _ = _install_dlc_via_depots(meta, dlc_ids, install_dir, pid, box,
-                                            dlc_hub, get_download_threads(), wanted)
+                                            dlc_hub, get_download_threads(), wanted,
+                                            primary)
         if not dlc_ok:
             extras_ok = False
             _push_log("⚠ Część DLC nie zainstalowała się poprawnie.")
@@ -3179,11 +3306,13 @@ def _install_dlc_worker(game_id, dlc_keys: list, langs: list | None = None) -> b
         _push_log(f"✗ Nie udało się pobrać manifestu builda: {exc}")
         return False
 
-    wanted = {str(l).lower() for l in (langs or _depot_langs_setting())}
-    _push_log(f"Języki DLC: {', '.join(sorted(wanted))}")
+    lang_list = [str(l).lower() for l in (langs or _depot_langs_setting())]
+    wanted = set(lang_list)
+    _push_log(f"Języki DLC: {', '.join(lang_list)} (główny: {lang_list[0]})")
     hub = _ProgressHub(0)
     ok, inst = _install_dlc_via_depots(meta, dlc_ids, install_dir, pid, box,
-                                       hub, get_download_threads(), wanted)
+                                       hub, get_download_threads(), wanted,
+                                       lang_list[0])
     if inst:
         _apply_support_data(install_dir, pid)
     _send_js({"type": "completion",
@@ -3522,6 +3651,20 @@ def update_all_games() -> dict:
     return _run_python_task(_update_all_worker, "UPDATE_ALL")
 
 
+def _pick_play_task(tasks: list):
+    """The playTask to launch. Galaxy marks a third-party LAUNCHER as primary for
+    some games (The Witcher 3 next-gen: REDprelauncher.exe, which needs the
+    REDlauncher MSI that only GOG's installer runs) — a depot install never runs
+    it, so prefer the real game executable: primary game task → any game task →
+    primary task → first task with a path."""
+    fts = [t for t in tasks if t.get("path")]
+    game = [t for t in fts if (t.get("category") or "").lower() == "game"]
+    return (next((t for t in game if t.get("isPrimary")), None)
+            or (game[0] if game else None)
+            or next((t for t in fts if t.get("isPrimary")), None)
+            or (fts[0] if fts else None))
+
+
 def launch_game(game_id) -> dict:
     """Launch an installed game. Reads the goggame-{id}.info playTasks (as GOG
     Galaxy does) to find the primary executable; falls back to the first .exe in
@@ -3538,10 +3681,7 @@ def launch_game(game_id) -> dict:
         info = next(root.glob(f"goggame-{game_id}.info"), None) or next(root.glob("goggame-*.info"), None)
         if info:
             data = json.loads(info.read_text(encoding="utf-8", errors="replace"))
-            tasks = data.get("playTasks") or []
-            prim = next((t for t in tasks if t.get("isPrimary") and t.get("path")), None) \
-                   or next((t for t in tasks if t.get("category") == "game" and t.get("path")), None) \
-                   or next((t for t in tasks if t.get("path")), None)
+            prim = _pick_play_task(data.get("playTasks") or [])
             if prim and prim.get("path"):
                 cand = (root / prim["path"].replace("\\", "/"))
                 if cand.exists():
