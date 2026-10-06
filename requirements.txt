@@ -1,0 +1,8 @@
+# GOG Manager — zależności
+# Wymaga też zewnętrznie: Microsoft Edge WebView2 Runtime (backend pywebview na Windows).
+# Reszta korzysta z biblioteki standardowej (urllib, sqlite3, lzma, zlib, xml...).
+
+pywebview>=4.0     # okno natywne + most JS<->Python (wymagane)
+
+# Opcjonalnie — szybsza (de)kompresja cache; fallback: lzma/zlib (stdlib).
+zstandard>=0.20    # opcjonalne
