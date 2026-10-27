@@ -232,6 +232,7 @@ main { height: 100%; overflow: hidden; display: flex; flex-direction: column; mi
   flex: 0 0 auto;
   min-height: var(--hero-h, 168px);
   border-bottom: 1px solid var(--line);
+  display: flex; flex-direction: column;
 }
 .hero-bg {
   position: absolute; inset: 0; z-index: 0;
@@ -246,13 +247,46 @@ main { height: 100%; overflow: hidden; display: flex; flex-direction: column; mi
 }
 .hero-content {
   position: relative; z-index: 2;
-  padding: 16px 24px;
+  padding: 16px 24px 14px;
+  flex: 1 1 auto;
+  display: flex; flex-direction: column;
+  gap: 12px;
+  min-height: 0;
+}
+/* top row: logo (left) + action buttons (right) */
+.hero-top {
+  flex: 1 1 auto;
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 20px;
-  height: 100%;
+  min-height: 0;
 }
+/* Metadata over the hero art: translucent backdrop keeps it readable on any image. */
+.hero-meta {
+  flex: 0 0 auto; align-self: flex-start; max-width: 100%;
+  display: flex; flex-wrap: wrap; align-items: flex-start; gap: 6px 22px;
+  padding: 9px 14px;
+  background: rgba(8, 10, 14, .58);
+  -webkit-backdrop-filter: blur(6px); backdrop-filter: blur(6px);
+  border: 1px solid rgba(255,255,255,.10); border-radius: 10px;
+}
+.hm-fact { display: flex; flex-direction: column; min-width: 0; }
+.hm-label {
+  font-size: calc(var(--fs-meta, 11px) * .72); line-height: 1.3;
+  text-transform: uppercase; letter-spacing: .05em;
+  color: rgba(255,255,255,.62);
+}
+.hm-value {
+  font-size: var(--fs-meta, 11px); line-height: 1.35; color: #fff;
+  text-shadow: 0 1px 2px rgba(0,0,0,.85);
+}
+.hm-value.clamp {
+  max-width: 34em; overflow: hidden;
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+}
+.hm-value a { color: var(--accent); }
+.hm-sub { opacity: .65; font-size: .85em; }
 /* SGDB logos are transparent — no box, just the artwork with a soft shadow. */
 .hero-logo {
   flex: 0 1 auto;
@@ -264,7 +298,8 @@ main { height: 100%; overflow: hidden; display: flex; flex-direction: column; mi
 }
 .hero-logo img {
   max-width: 100%;
-  max-height: calc(var(--hero-h, 168px) - 34px);
+  /* leave room for the metadata strip under the logo */
+  max-height: max(56px, calc(var(--hero-h, 168px) - 34px - 76px));
   width: auto; height: auto; object-fit: contain;
   filter: drop-shadow(0 2px 8px rgba(0,0,0,.75));
 }
@@ -342,14 +377,17 @@ main { height: 100%; overflow: hidden; display: flex; flex-direction: column; mi
 .wrap {
   padding: 13px 15px;
   display: grid;
-  grid-template-columns: var(--wrap-left, 1.5fr) 7px minmax(0, .9fr);
+  grid-template-columns: var(--wrap-left, 1.667fr) 7px minmax(0, 1fr);
   grid-template-rows: 1fr;
   gap: 13px;
   flex: 1;
   min-height: 0;
   overflow: hidden;
 }
-.right-col { display: flex; flex-direction: column; gap: 13px; min-height: 0; overflow-y: auto; }
+.right-col { display: flex; flex-direction: column; gap: 13px; min-height: 0; overflow: hidden; }
+/* two independent panels, each scrolls on its own */
+.right-col .card.shots  { flex: 1 1 0; min-height: 150px; }
+.right-col .card.extras { flex: 0 1 auto; min-height: 90px; max-height: 50%; }
 
 /* ── cards ───────────────────────────────────────────────── */
 .card { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; display: flex; flex-direction: column; min-height: 0; }
@@ -372,14 +410,9 @@ main { height: 100%; overflow: hidden; display: flex; flex-direction: column; mi
 .description img, .description table { max-width: 100%; }
 .description a { color: var(--accent); }
 
-/* metadata grid */
-.meta-grid { display: grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap: 8px; }
-.fact { background: var(--panel2); padding: 8px 10px; border-radius: 9px; }
-.fact .label { color: var(--muted); font-size: 11px; margin-bottom: 2px; }
-.fact .value { font-size: 12px; }
 
 /* screenshots */
-.screens { display: grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap: 8px; }
+.screens { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 8px; }
 .screen { aspect-ratio: 16/9; border-radius: 8px; overflow: hidden; background: var(--panel2); cursor: zoom-in; }
 .screen img { width: 100%; height: 100%; object-fit: cover; transition: transform .15s; }
 .screen:hover img { transform: scale(1.04); }
@@ -1212,7 +1245,7 @@ const I18N = {
     'detail.screenshots':'Screenshoty','detail.noScreenshots':'Brak screenshotów.',
     'detail.metadata':'Metadane','detail.releaseDate':'Data wydania','detail.rating':'Ocena GOG','detail.installable':'Instalacja',
     'detail.yes':'✓ Tak','detail.no':'✗ Nie','detail.languages':'Języki','detail.platforms':'Platformy',
-    'detail.forum':'Forum','detail.support':'Support','detail.open':'otwórz →',
+    'detail.forum':'Forum','detail.support':'Support','detail.open':'otwórz →','detail.links':'Linki',
     'detail.installerFiles':'Pliki instalatora','detail.noData':'Brak danych. Pobierz JSON lub wybierz katalog.',
     'detail.extras':'Dodatki (extras)','detail.extrasLoading':'Wczytywanie…','detail.extrasNone':'Brak dodatków dla tej gry.',
     'detail.init':'Inicjalizacja…',
@@ -1286,7 +1319,7 @@ const I18N = {
     'detail.screenshots':'Screenshots','detail.noScreenshots':'No screenshots.',
     'detail.metadata':'Metadata','detail.releaseDate':'Release date','detail.rating':'GOG rating','detail.installable':'Installable',
     'detail.yes':'✓ Yes','detail.no':'✗ No','detail.languages':'Languages','detail.platforms':'Platforms',
-    'detail.forum':'Forum','detail.support':'Support','detail.open':'open →',
+    'detail.forum':'Forum','detail.support':'Support','detail.open':'open →','detail.links':'Links',
     'detail.installerFiles':'Installer files','detail.noData':'No data. Fetch JSON or pick a folder.',
     'detail.extras':'Extras','detail.extrasLoading':'Loading…','detail.extrasNone':'No extras for this game.',
     'detail.init':'Initializing…',
@@ -2393,6 +2426,32 @@ function confirmDeleteInstalledGame(g) {
 /* ════════════════════════════════════════
    GAME DETAIL VIEW
 ════════════════════════════════════════ */
+// Metadata shown over the hero art (replaces the former "Metadata" card).
+function heroMeta(g) {
+  const p = g.product || {}, d = g.details || {};
+  const rel = String(p.release_date || d.releaseTimestamp || '').slice(0, 10);
+  const langs = Object.values(p.languages || {}).join(', ');
+  const fact = (label, value, extra = '') =>
+    `<div class="hm-fact"><span class="hm-label">${label}</span><span class="hm-value${extra}">${value}</span></div>`;
+  const out = [];
+  out.push(fact(t('detail.releaseDate'), esc(rel || '—')));
+  out.push(fact(t('detail.rating'), typeof g.rating === 'number'
+    ? `★ ${g.rating.toFixed(1)} <span class="hm-sub">(${g.rating_count || 0})</span>` : '—'));
+  out.push(fact(t('detail.installable'), p.is_installable ? t('detail.yes') : t('detail.no')));
+  out.push(fact(t('detail.platforms'), esc((g.platforms || []).join(', ') || '—')));
+  if (g.downloaded && g.installer_files?.length)
+    out.push(fact(t('detail.installerFiles'),
+      `<span title="${esc(g.installer_files.join(', '))}">${g.installer_files.length} · ${formatSize(g.installer_size || 0)}</span>`));
+  out.push(fact(t('detail.languages'), `<span title="${esc(langs)}">${esc(langs || '—')}</span>`, ' clamp'));
+  const links = [];
+  if (p.links?.forum || d.forumLink)
+    links.push(`<a href="${esc(p.links?.forum || d.forumLink)}" target="_blank">${t('detail.forum')}</a>`);
+  if (p.links?.support)
+    links.push(`<a href="${esc(p.links.support)}" target="_blank">${t('detail.support')}</a>`);
+  if (links.length) out.push(fact(t('detail.links'), links.join(' · ')));
+  return `<div class="hero-meta" aria-label="${t('detail.metadata')}">${out.join('')}</div>`;
+}
+
 function renderMain() {
   const view = document.getElementById('game-view');
   const g    = games.find(x => x.id === sel) || games[0];
@@ -2404,7 +2463,7 @@ function renderMain() {
 
   const p       = g.product || {};
   const d       = g.details || {};
-  const shots   = (p.screenshots || []).slice(0, 4)
+  const shots   = (p.screenshots || []).slice(0, 12)
                     .map(s => ({ thumb: shotUrl(s), big: shotUrlBig(s) }))
                     .filter(s => s.thumb);
   const heroBg  = shots[0]?.big || shots[0]?.thumb
@@ -2416,12 +2475,15 @@ function renderMain() {
       <div class="hero-bg" id="heroBg" data-gog-bg="${heroBg}" style="background-image:url('${heroBg}')"></div>
       <div class="hero-scrim"></div>
       <div class="hero-content">
-        <div class="hero-logo">
-          <img id="heroLogo" src="${toUrl(p.images?.logo||p.images?.icon)}" data-gog-logo="${toUrl(p.images?.logo||p.images?.icon)}"
-               onerror="this.style.display='none';var f=document.getElementById('heroFallback');if(f)f.style.display='block'">
-          <h1 class="hero-fallback-title" id="heroFallback" style="display:none">${esc(g.title)}</h1>
+        <div class="hero-top">
+          <div class="hero-logo">
+            <img id="heroLogo" src="${toUrl(p.images?.logo||p.images?.icon)}" data-gog-logo="${toUrl(p.images?.logo||p.images?.icon)}"
+                 onerror="this.style.display='none';var f=document.getElementById('heroFallback');if(f)f.style.display='block'">
+            <h1 class="hero-fallback-title" id="heroFallback" style="display:none">${esc(g.title)}</h1>
+          </div>
+          ${gameActionButtons(g)}
         </div>
-        ${gameActionButtons(g)}
+        ${heroMeta(g)}
       </div>
       <span class="hero-src-badge" id="heroSrcBadge"></span>
       <button class="hero-fix-btn" id="heroFixBtn" title="Popraw grafikę (SGDB)" onclick="openSgdbOverride()">🔧</button>
@@ -2442,7 +2504,7 @@ function renderMain() {
       <div class="wrap-gutter" id="wrapGutter" title="Przeciągnij, aby zmienić podział"></div>
 
       <div class="right-col">
-        <section class="card">
+        <section class="card shots">
           <h2>${t('detail.screenshots')}</h2>
           <div class="body">
             ${shots.length
@@ -2451,27 +2513,7 @@ function renderMain() {
           </div>
         </section>
 
-        <section class="card">
-          <h2>${t('detail.metadata')}</h2>
-          <div class="body">
-            <div class="meta-grid">
-              <div class="fact"><div class="label">${t('detail.releaseDate')}</div><div class="value">${esc((p.release_date||d.releaseTimestamp||'—').slice ? (p.release_date||d.releaseTimestamp||'—').slice(0,10) : '—')}</div></div>
-              <div class="fact"><div class="label">${t('detail.rating')}</div><div class="value">${typeof g.rating==='number' ? ('★ '+g.rating.toFixed(1)+' <span class="small" style="opacity:.6">('+(g.rating_count||0)+')</span>') : '—'}</div></div>
-              <div class="fact"><div class="label">${t('detail.installable')}</div><div class="value">${p.is_installable?t('detail.yes'):t('detail.no')}</div></div>
-              <div class="fact"><div class="label">${t('detail.languages')}</div><div class="value" style="font-size:11px">${esc(Object.values(p.languages||{}).join(', ')||'—')}</div></div>
-              <div class="fact"><div class="label">${t('detail.platforms')}</div><div class="value">${esc((g.platforms||[]).join(', ')||'—')}</div></div>
-              <div class="fact"><div class="label">${t('detail.forum')}</div><div class="value"><a href="${esc(p.links?.forum||d.forumLink||'#')}" target="_blank">${t('detail.open')}</a></div></div>
-              <div class="fact"><div class="label">${t('detail.support')}</div><div class="value"><a href="${esc(p.links?.support||'#')}" target="_blank">${t('detail.open')}</a></div></div>
-            </div>
-            ${g.downloaded && g.installer_files?.length ? `
-            <div style="margin-top:12px;padding-top:12px;border-top:1px solid var(--line)">
-              <div class="label" style="margin-bottom:6px">${t('detail.installerFiles')}</div>
-              ${g.installer_files.map(f=>`<div class="small" style="margin-bottom:3px">📄 ${esc(f)}</div>`).join('')}
-            </div>` : ''}
-          </div>
-        </section>
-
-        <section class="card">
+        <section class="card extras">
           <h2>${t('detail.extras')}</h2>
           <div class="body" id="extrasBody">
             <div class="small" data-i18n="detail.extrasLoading">Wczytywanie…</div>

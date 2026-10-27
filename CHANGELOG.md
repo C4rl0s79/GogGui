@@ -4,6 +4,24 @@ Wszystkie istotne zmiany w projekcie **GOG Library Manager** (gogv2).
 Format oparty na [Keep a Changelog](https://keepachangelog.com/pl/1.1.0/),
 wersjonowanie wg [SemVer](https://semver.org/lang/pl/).
 
+## [1.4.5] - 2026-10-27
+
+### Zmieniono
+- **Widok gry: metadane na grafice tła.** Karta „Metadane” zniknęła — data
+  wydania, ocena GOG, instalacja, platformy, pliki instalatora, języki i linki
+  wyświetlają się teraz w pasku pod logo, na półprzezroczystym tle (czytelne na
+  każdej grafice; rozmiar tekstu z ustawienia „Metadane / małe”). Długa lista
+  języków skraca się do 2 linii, pełna w podpowiedzi.
+- **Prawa kolumna: dwie osobne karty** — „Screenshoty” i „Dodatki (extras)”,
+  każda przewija się sama (bez wspólnego, przewijanego kontenera). Screenshoty
+  układają się w tyle kolumn, ile się mieści; pokazywanych jest do 12 (było 4).
+
+### Naprawiono
+- **Puste miejsce po prawej stronie widoku gry** po przeciągnięciu podziału
+  opis/prawa kolumna: prawa kolumna miała wagę `.9fr`, a pojedyncza kolumna
+  z wagą < 1 zajmuje tylko taki ułamek wolnego miejsca (ok. 10% szerokości
+  zostawało puste). Teraz `1fr`; domyślne proporcje bez zmian.
+
 ## [1.4.4] - 2026-10-06
 
 ### Naprawiono
