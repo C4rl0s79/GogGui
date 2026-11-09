@@ -4,6 +4,50 @@ Wszystkie istotne zmiany w projekcie **GOG Library Manager** (gogv2).
 Format oparty na [Keep a Changelog](https://keepachangelog.com/pl/1.1.0/),
 wersjonowanie wg [SemVer](https://semver.org/lang/pl/).
 
+## [Unreleased]
+
+### Dodano
+- **Archiwum depotów obejmuje całą grę:** wszystkie języki buildu i wszystkie posiadane DLC, które build
+  zawiera — także gdy instalator offline miał tylko jeden język. Instalacja (EmuStart / Lumen) wybiera języki i
+  DLC z archiwum. Starsze archiwa uzupełnia „Aktualizuj wszystko” (tylko brakujące chunki). DLC nieposiadane nie
+  są pobierane; gdy lista posiadanych produktów jest niedostępna — DLC z instalatorów i wcześniejszego rekordu.
+- **Metadane gier w folderach `<katalog instalatorów>/<slug>/`** (pełna synchronizacja, „Aktualizuj metadane”
+  gry, migracja do archiwum): `product_<slug>.json`, `game-details.json` (bez kluczy CD i linków konta),
+  `galaxy_<slug>.json` (producent, wydawca, gatunki, data wydania z api.gog.com/v2) i grafiki: `icon_`, `logo_`
+  (logo z tytułem), `boxart_` (pionowa okładka), `background_`, `titlelogo_` (PNG z przezroczystością),
+  `iconsquare_`. Istniejące grafiki nie są pobierane ponownie. Czyta je serwer EmuStart (opis i grafiki gier GOG
+  w Lumen).
+- **Lokalne archiwum depotów zamiast instalatorów offline** — opcja
+  *Ustawienia → Pobieranie → „Pobieraj jako lokalne depoty zamiast instalatorów
+  offline”* (domyślnie wyłączona, także dla istniejących konfiguracji). Archiwum
+  (`<katalog instalatorów>/_depots`, wersjonowany format `goggui-depot-archive`
+  v1, moduł `depot_archive.py`) przechowuje meta buildu, manifesty depotów i
+  zależności oraz skompresowane chunki (wspólne dla gier/buildów), bez tokenów
+  i secure-linków. Opis: `docs/DEPOT_ARCHIVE.md`.
+- **Migracja „Aktualizuj wszystko” gra po grze**: inwentaryzacja → plan →
+  pobranie → pełna weryfikacja → zatwierdzenie → usunięcie wyłącznie
+  zastąpionych instalatorów tej gry (EXE/BIN, DLC; trwale, nie do Kosza) →
+  zapis zakończenia → dopiero następna gra. Dziennik per gra pozwala wznowić
+  po restarcie (także stan „zweryfikowane, czeka na sprzątanie”); błąd
+  usuwania wstrzymuje kolejkę; raport z bilansem miejsca.
+- **„📦 Zainstaluj z lokalnego depo” / „📦 DLC z lokalnego depo”** — wybór
+  buildu, języków (+ główny), DLC i katalogu; instalacja bez dostępu do GOG,
+  dokładna lista braków i naprawa tylko za zgodą (bez cichego fallbacku do CDN),
+  wznawianie i weryfikacja zainstalowanych plików.
+- Osobne oznaczenia w widoku gry: instalatory offline / depot lokalny
+  (kompletny, niekompletny, czeka na sprzątanie) / zainstalowana.
+
+### Zmieniono
+- Wspólny silnik instalacji depotów przyjmuje źródło danych (CDN albo
+  archiwum) — bez drugiego instalatora; wybór depotów wg języka w jednej
+  funkcji (`_select_depots`) dla gry, DLC i archiwum.
+
+### Bezpieczeństwo
+- Ścieżki z manifestów depotów są sprawdzane przed zapisem (`..`, litera
+  dysku/UNC, `:`, nazwy urządzeń; dotyczy też zwykłej instalacji z CDN).
+- `supportData` z `goggame-*.script` nie kopiuje poza katalog gry, `setIni` nie
+  pisze poza katalog gry i Dokumenty.
+
 ## [1.4.5] - 2026-10-27
 
 ### Zmieniono

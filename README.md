@@ -64,6 +64,26 @@ Wznawianie jest bezpieczne: postęp zapisywany jest na bieżąco
 (`_goginstall_state.json`), a przerwaną instalację po prostu uruchamiasz jeszcze
 raz — dokańcza brakujące pliki (nie zaczyna od zera i nie udaje ukończonej).
 
+## Lokalne archiwum depotów (zamiast instalatorów offline)
+
+**Ustawienia → Pobieranie → „Pobieraj jako lokalne depoty zamiast instalatorów
+offline”** (domyślnie wyłączone; samo włączenie niczego nie rusza na dysku).
+
+- **Pobierz** zapisuje manifesty i skompresowane chunki depotów do
+  `<katalog instalatorów>/_depots` (bez instalowania gry); extras jak dotąd.
+- **Aktualizuj wszystko** migruje pobrane gry **po jednej**: pobranie →
+  pełna weryfikacja → zatwierdzenie archiwum → trwałe (nie do Kosza) usunięcie
+  **tylko zastąpionych** instalatorów tej gry → dopiero następna gra. Extras,
+  stare wersje, pliki niejednoznaczne i instalatory bez zweryfikowanego
+  zastępstwa zostają; błąd usuwania wstrzymuje kolejkę. Chwilowo potrzeba
+  miejsca na archiwum jednej gry.
+- **📦 Zainstaluj z lokalnego depo** — wybór buildu, języków (+ główny), DLC
+  i katalogu; kompletny zakres instaluje się **bez dostępu do GOG**, braki są
+  wypisywane i dociągane tylko za zgodą („Pobierz brakujące / napraw”).
+
+Szczegóły (format archiwum, wznawianie, języki/DLC, ograniczenia, checklista
+testów ręcznych): [docs/DEPOT_ARCHIVE.md](docs/DEPOT_ARCHIVE.md).
+
 ## Grafiki (tła i logo)
 
 **SteamGridDB** daje ładniejsze tła (**hero**) i **logo** niż GOG — wpisujesz klucz
@@ -80,7 +100,8 @@ w katalogu programu**. W Ustawieniach → Katalogi wybierasz tylko:
 - **gdzie są zainstalowane** gry (domyślnie `C:\GOG Games`).
 
 Dalej: liczba połączeń pobierania (pliki × segmenty), języki aktualizacji
-installerów, języki instalacji z depotów, motyw i rozmiary czcionek. Poziom
+installerów, języki instalacji z depotów, tryb lokalnego archiwum depotów,
+motyw i rozmiary czcionek. Poziom
 zabezpieczenia sekretów (token/klucze) pokazuje `security_status`.
 
 ## Wymagania

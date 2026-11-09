@@ -6,6 +6,7 @@ import xml.etree.ElementTree as ET
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 import webview
+import depot_archive as DA
 
 
 def _base_dirs():
@@ -128,6 +129,11 @@ DEFAULT_SETTINGS: dict = {
     "extras_subdir": True,               # put bonus content into <game>/extras/
     "update_langs": ["en", "pl"],        # languages the installer-updater keeps (os = _MY_OS)
     "depot_langs":  ["en"],              # default languages for depot install (prefix match)
+    # Store downloads as a local depot archive (manifests + compressed chunks)
+    # instead of offline installers. OFF for every existing config: enabling it
+    # changes nothing on disk until a download / "Update all" runs.
+    "archive_mode": False,
+    "archive_dir":  "",                  # "" = <installers dir>/_depots
     # Persisted directories ("" = use the built-in defaults above)
     "json_dir":    "",
     "install_dir": "",
@@ -1007,9 +1013,11 @@ def get_games() -> list:
     installed  = scan_installed_games()   # one directory scan
     downloaded = scan_downloaded_games()  # one directory scan
     pranks     = _load_purchase_ranks()   # {product_id: rank} — „by purchase date"
+    archived   = _archive_status_map()    # {product_id: {...}} — local depot archive
     result = []
     for g in scan_games():
         dl = _check_downloaded_for_game(g, downloaded)
+        arch = archived.get(str((g.get("product") or {}).get("id") or g["id"]))
         result.append({
             "id":           g["id"],
             "slug":         g["slug"],
@@ -1037,6 +1045,11 @@ def get_games() -> list:
             "extras_files":    dl["extras_files"],
             "extras_size":     dl["extras_size"],
             "has_installer":   dl["has_installer"],
+            # Local depot archive (separate from offline installers / install):
+            # None | {state: complete|incomplete, build_id, version, languages,
+            #         dlcs, size, pending_cleanup}
+            "archive":         arch,
+            "archived":        bool(arch),
         })
     return result
 
@@ -1395,6 +1408,23 @@ def _gog_get_json(url: str, access_token: str) -> dict:
         return json.loads(resp.read().decode("utf-8", "replace"))
 
 
+_OWNED_CACHE: dict = {"at": 0.0, "ids": None}
+
+
+def _owned_ids_cached(max_age: float = 1800) -> set | None:
+    """Owned product ids (games and DLC) for the archive scope; one account call per half hour.
+    None — the list could not be fetched (then DLC come only from installers and earlier records)."""
+    if _OWNED_CACHE["ids"] is not None and time.time() - _OWNED_CACHE["at"] < max_age:
+        return _OWNED_CACHE["ids"]
+    try:
+        ids = set(_get_owned_product_ids())
+    except Exception as exc:
+        log(f"owned ids :: {exc}")
+        return _OWNED_CACHE["ids"]
+    _OWNED_CACHE.update(at=time.time(), ids=ids)
+    return ids
+
+
 def _get_owned_product_ids() -> list:
     """Fresh list of owned product IDs from the GOG account API.
     Refreshes the access token (and writes it back) if it has expired."""
@@ -1531,6 +1561,140 @@ def _fetch_gog_rating(product_id: str) -> dict | None:
         return None
 
 
+# ── Metadane gry w folderze BASE/<slug> (obok archiwum depotów) ─────────────────
+# Opis, ikona, logo, okładka i tło każdej posiadanej gry jako zwykłe pliki — czyta je serwer EmuStart
+# (opis i grafiki gier GOG w Lumen). Układ jak w starszych folderach: product_<slug>.json, game-details.json,
+# icon_<slug>.png, logo_<slug>.jpg; nowe: galaxy_<slug>.json (producent, wydawca, gatunki, data wydania),
+# boxart_<slug>.jpg (pionowa okładka), background_<slug>.jpg, titlelogo_<slug>.png, iconsquare_<slug>.png.
+# Bez kluczy CD i linków konta (game-details.json zapisywany bez nich).
+GOG_V2_GAME_API = "https://api.gog.com/v2/games/{id}?locale=en-US"
+_META_SECRET_KEYS = {"cdkey", "cdkeys", "serialkeys", "registrydownloadurl", "downloads", "galaxydownloads",
+                     "simplegalaxyinstallers", "extras", "messages"}
+_SAFE_SLUG = re.compile(r"^[a-z0-9][a-z0-9_\-]{0,120}$")
+_META_WORKERS = 4
+
+
+def _fetch_v2_game(product_id: str) -> dict | None:
+    """Public GOG catalog entry (v2): box art, logo, background, developers, publishers, tags."""
+    req = urllib.request.Request(GOG_V2_GAME_API.format(id=product_id), headers={"User-Agent": "Mozilla/5.0"})
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            return json.loads(resp.read().decode("utf-8", "replace"))
+    except Exception as exc:
+        log(f"v2 game fetch {product_id} :: {exc}")
+        return None
+
+
+def _fetch_image(url: str) -> bytes | None:
+    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+    try:
+        with urllib.request.urlopen(req, timeout=60) as resp:
+            data = resp.read(40 * 1024 * 1024 + 1)
+        return data if 0 < len(data) <= 40 * 1024 * 1024 else None
+    except Exception as exc:
+        log(f"image fetch {url} :: {exc}")
+        return None
+
+
+def _strip_secrets(obj):
+    if isinstance(obj, dict):
+        return {k: _strip_secrets(v) for k, v in obj.items() if str(k).lower() not in _META_SECRET_KEYS}
+    if isinstance(obj, list):
+        return [_strip_secrets(v) for v in obj]
+    return obj
+
+
+def _galaxy_summary(v2: dict) -> dict:
+    emb = v2.get("_embedded") or {}
+    prod = emb.get("product") or {}
+    names = lambda xs: [str(x.get("name")) for x in xs or [] if isinstance(x, dict) and x.get("name")]
+    return {"id": str(prod.get("id") or ""), "title": prod.get("title") or "",
+            "releaseDate": prod.get("globalReleaseDate") or prod.get("gogReleaseDate") or "",
+            "developers": names(emb.get("developers")),
+            "publishers": names(emb.get("publishers")) or ([emb["publisher"]["name"]] if isinstance(emb.get("publisher"), dict) and emb["publisher"].get("name") else []),
+            "tags": names(emb.get("tags")), "features": names(emb.get("features"))}
+
+
+def _meta_images(slug: str, prod: dict, v2: dict | None) -> dict:
+    """file name → source URL (the files the folder should hold)."""
+    imgs = prod.get("images") or {}
+    links = (v2 or {}).get("_links") or {}
+    href = lambda k: (links.get(k) or {}).get("href") if isinstance(links.get(k), dict) else None
+    out = {f"icon_{slug}.png": norm_url(imgs.get("icon")),
+           # the title logo (1600×740, like the older folders) as JPEG; the product's 200×120 thumbnail only without v2
+           f"logo_{slug}.jpg": (re.sub(r"\.png$", ".jpg", href("logo")) if href("logo") else None)
+                               or norm_url(imgs.get("logo2x") or imgs.get("logo")),
+           f"boxart_{slug}.jpg": href("boxArtImage"),
+           f"background_{slug}.jpg": href("galaxyBackgroundImage") or href("backgroundImage") or norm_url(imgs.get("background")),
+           f"titlelogo_{slug}.png": href("logo"),
+           f"iconsquare_{slug}.png": href("iconSquare")}
+    return {k: v for k, v in out.items() if v and str(v).startswith("https://")}
+
+
+def export_game_meta(g: dict, refresh_images: bool = False, fetch_v2=None, fetch_image=None) -> dict:
+    """Metadane jednej gry do BASE/<slug>: JSON-y zawsze aktualne, obrazy tylko brakujące (albo wszystkie,
+    gdy refresh_images). Nic poza tym folderem; zła nazwa (slug) — pomijana."""
+    slug = str(g.get("slug") or "").strip().lower()
+    prod = g.get("product") or {}
+    pid = str(prod.get("id") or g.get("id") or "")
+    res = {"slug": slug, "json": 0, "images": 0, "errors": []}
+    if not _SAFE_SLUG.match(slug) or not pid.isdigit():
+        res["errors"].append(f"pominięto: niebezpieczna nazwa folderu {slug!r}")
+        return res
+    folder = BASE / slug
+    folder.mkdir(parents=True, exist_ok=True)
+
+    def put_json(name: str, obj) -> None:
+        raw = json.dumps(obj, ensure_ascii=False, indent=1).encode("utf-8")
+        p = folder / name
+        if p.exists() and p.read_bytes() == raw:
+            return
+        _atomic_write(p, raw)
+        res["json"] += 1
+
+    put_json(f"product_{slug}.json", prod)
+    det = g.get("details") or {}
+    if det:
+        put_json("game-details.json", _strip_secrets(det))
+    v2 = (fetch_v2 or _fetch_v2_game)(pid)
+    if v2:
+        put_json(f"galaxy_{slug}.json", _galaxy_summary(v2))
+    for name, url in _meta_images(slug, prod, v2).items():
+        p = folder / name
+        if p.exists() and p.stat().st_size > 0 and not refresh_images:
+            continue
+        data = (fetch_image or _fetch_image)(url)
+        if data is None:
+            res["errors"].append(f"{name}: nie pobrano")
+            continue
+        _atomic_write(p, data)
+        res["images"] += 1
+    return res
+
+
+def _export_meta_many(games: list) -> None:
+    if not games:
+        return
+    _push_log(f"Zapisuję metadane i grafiki do folderów gier ({len(games)})…")
+    done = {"json": 0, "images": 0, "errors": 0}
+    lock = threading.Lock()
+
+    def one(g):
+        try:
+            r = export_game_meta(g)
+        except Exception as exc:
+            r = {"json": 0, "images": 0, "errors": [str(exc)]}
+        with lock:
+            done["json"] += r["json"]
+            done["images"] += r["images"]
+            done["errors"] += len(r["errors"])
+
+    with ThreadPoolExecutor(max_workers=_META_WORKERS) as ex:
+        list(ex.map(one, games))
+    _push_log(f"✓ Metadane w folderach gier: {done['json']} plików JSON, {done['images']} grafik"
+              + (f", {done['errors']} problemów (szczegóły w logu)" if done["errors"] else "") + ".")
+
+
 def _write_product_json(slug: str, product: dict) -> None:
     """Store a product's JSON in the packed library (keyed by slug)."""
     _lib_put(product.get("slug") or slug, product)
@@ -1578,6 +1742,8 @@ def _sync_all_worker() -> bool:
     # Single packed write for the whole batch (fast, atomic).
     if collected:
         _lib_put_many(collected)
+        wanted = {slug for slug, _p, _r in collected}
+        _export_meta_many([g for g in scan_games() if g["slug"] in wanted])
 
     _push_log(f"✓ Gotowe: {state['games']} gier zapisanych, "
               f"{state['skipped']} DLC/dodatków pominięto, "
@@ -1602,6 +1768,9 @@ def _sync_one_worker(game_id) -> bool:
         return False
     rating = _fetch_gog_rating(pid)
     _lib_put_many([(prod.get("slug") or slug, prod, rating)])
+    g2 = next((x for x in scan_games() if x["id"] == str(game_id)), None)
+    if g2:
+        _export_meta_many([g2])
     _send_js({"type": "completion", "filename": slug, "speed": "JSON"})
     _push_log("✓ Zapisano.")
     return True
@@ -2339,6 +2508,8 @@ def _download_worker(game_id, selection_keys: list) -> bool:
     if not chosen:
         _push_log("✗ Nic nie zaznaczono.")
         return False
+    if _archive_mode():
+        return _archive_download_worker(g, chosen)
     return _download_selection(g, chosen)
 
 
@@ -2491,6 +2662,12 @@ def _get_secure_link(product_id: str, box: dict) -> str:
 
 def _fetch_chunk(secure_link: str, comp_md5: str) -> bytes:
     """Download one chunk, verify its compressed MD5, return decompressed bytes."""
+    return zlib.decompress(_fetch_chunk_raw(secure_link, comp_md5), 15)
+
+
+def _fetch_chunk_raw(secure_link: str, comp_md5: str) -> bytes:
+    """Download one chunk and verify its compressed MD5; return the COMPRESSED
+    bytes exactly as the CDN serves them (what the local archive stores)."""
     url = f"{secure_link}/{_galaxy_path(comp_md5)}"
     last_exc = None
     for attempt in range(3):
@@ -2501,7 +2678,7 @@ def _fetch_chunk(secure_link: str, comp_md5: str) -> bytes:
                 data = resp.read()
             if hashlib.md5(data).hexdigest().lower() != comp_md5.lower():
                 raise RuntimeError(f"MD5 chunku nie pasuje ({comp_md5[:8]}…)")
-            return zlib.decompress(data, 15)
+            return data
         except Exception as exc:
             last_exc = exc
             time.sleep(1 + attempt)
@@ -2548,18 +2725,38 @@ def _dependency_secure_link() -> str:
 
 
 def _dependency_items(dep_ids: list) -> tuple[list, list, set]:
-    """Resolve declared redist dependency ids (e.g. 'DOSBox074_2CS') to the
-    DepotFile / DepotDirectory items that must be unpacked into the game dir.
-    Returns (files, dirs, missing_ids)."""
+    """Resolve declared redist dependency ids to the DepotFile / DepotDirectory
+    items that must be unpacked into the game dir. Returns (files, dirs, missing_ids)."""
+    mans, missing = _dependency_manifests(dep_ids)
+    files, dirs = _dep_items_of(mans)
+    return files, dirs, missing
+
+
+def _dep_items_of(manifests: list) -> tuple[list, list]:
+    """DepotFile / DepotDirectory items of dependency manifests → (files, dirs)."""
+    files, dirs = [], []
+    for m in manifests:
+        for it in ((m.get("man") or {}).get("depot") or {}).get("items") or []:
+            t = it.get("type")
+            if t == "DepotDirectory":
+                dirs.append(it)
+            elif t == "DepotFile":
+                files.append(it)
+    return files, dirs
+
+
+def _dependency_manifests(dep_ids: list) -> tuple[list, set]:
+    """Resolve declared redist dependency ids (e.g. 'DOSBox074_2CS') to their
+    depot manifests: ([{"id", "manifest", "man"}], missing_ids)."""
     want = {str(d) for d in (dep_ids or []) if str(d).strip()}
     if not want:
-        return [], [], set()
+        return [], set()
     repo = _cs_get_zlib(GOG_DEP_REPO)          # plain JSON; _cs_get_zlib tolerates that
     man_url = repo.get("repository_manifest")
     if not man_url:
         raise RuntimeError("brak repository_manifest")
     rep = _cs_get_zlib(man_url)
-    files, dirs, matched = [], [], set()
+    out, matched = [], set()
     for d in rep.get("depots") or []:
         did = str(d.get("dependencyId") or "")
         if did not in want or not d.get("manifest"):
@@ -2567,13 +2764,8 @@ def _dependency_items(dep_ids: list) -> tuple[list, list, set]:
         matched.add(did)
         man = _cs_get_zlib(
             f"{GOG_CDN}/content-system/v2/dependencies/meta/{_galaxy_path(d['manifest'])}")
-        for it in (man.get("depot") or {}).get("items") or []:
-            t = it.get("type")
-            if t == "DepotDirectory":
-                dirs.append(it)
-            elif t == "DepotFile":
-                files.append(it)
-    return files, dirs, (want - matched)
+        out.append({"id": did, "manifest": str(d["manifest"]), "man": man})
+    return out, (want - matched)
 
 
 def _user_documents() -> Path:
@@ -2651,6 +2843,19 @@ def _apply_support_data(install_dir: Path, pid: str) -> None:
     except Exception as exc:
         log(f"support script parse: {exc}")
         return
+
+    def _inside(p: Path, *roots) -> bool:
+        # The .script comes from the (untrusted) depot: never let it copy or
+        # write outside the game dir (supportData) / game dir + Documents (setIni).
+        rp = Path(os.path.abspath(p))
+        for r in roots:
+            try:
+                rp.relative_to(Path(os.path.abspath(r)))
+                return True
+            except (ValueError, TypeError):
+                continue
+        return False
+
     for act in data.get("actions") or []:
         ins = act.get("install") or {}
         kind = ins.get("action")
@@ -2659,6 +2864,9 @@ def _apply_support_data(install_dir: Path, pid: str) -> None:
             fn = args.get("filename") or ""
             if "{" in _resolve(fn).as_posix():           # unknown placeholder
                 log(f"setIni: pomijam (nieznana ścieżka) {fn}")
+                continue
+            if not _inside(_resolve(fn), install_dir, docs or _user_documents()):
+                log(f"setIni: pomijam (ścieżka poza grą/Dokumentami) {fn}")
                 continue
             try:
                 _ini_set(_resolve(fn), str(args.get("section") or ""),
@@ -2677,6 +2885,9 @@ def _apply_support_data(install_dir: Path, pid: str) -> None:
         typ  = (args.get("type") or "").lower()
         src  = _resolve(args.get("source"))
         dst  = _resolve(args.get("target"))
+        if not (_inside(src, install_dir) and _inside(dst, install_dir)):
+            log(f"supportData: pomijam (ścieżka poza katalogiem gry) {src} → {dst}")
+            continue
         try:
             if typ == "folder" and src.is_dir():
                 shutil.copytree(src, dst, dirs_exist_ok=True)
@@ -2758,6 +2969,29 @@ def _depot_rel(path: str) -> str:
     return str(path or "").replace("\\", "/").lstrip("/")
 
 
+def _mk_depot_dir(install_dir: Path, path: str) -> None:
+    """Create a DepotDirectory inside install_dir; an unsafe path (absolute,
+    '..', device name) is refused and logged instead of created."""
+    try:
+        DA.safe_join(install_dir, path).mkdir(parents=True, exist_ok=True)
+    except DA.UnsafePath as exc:
+        log(f"depot: pomijam niebezpieczny katalog {path!r}: {exc}")
+
+
+def _product_depots(meta: dict, product_id) -> list:
+    return [d for d in (meta.get("depots") or [])
+            if str(d.get("productId")) == str(product_id)]
+
+
+def _select_depots(meta: dict, product_id, wanted: set | None) -> list:
+    """Depots of one product (base game or DLC) for the wanted languages:
+    language-neutral ('*') + those carrying a wanted language. ONE rule used by
+    the CDN install, the DLC install and the local archive (no fallback here —
+    callers that historically fell back to 'all depots' do so explicitly)."""
+    return [d for d in _product_depots(meta, product_id)
+            if _lang_match(d.get("languages"), wanted)]
+
+
 def _parse_dlc_ids(keys) -> set:
     """DLC product ids from manifest row keys 'dlc:<id>:installer:<n>' (dedup)."""
     out = set()
@@ -2769,7 +3003,11 @@ def _parse_dlc_ids(keys) -> set:
     return out
 
 
-def _collect_depot_groups(depots: list) -> list:
+def _cdn_depot_manifest(d: dict) -> dict:
+    return _cs_get_zlib(f"{GOG_CDN}/content-system/v2/meta/{_galaxy_path(d['manifest'])}")
+
+
+def _collect_depot_groups(depots: list, load=None) -> list:
     """Fetch the manifests of `depots` and return ONE group per depot:
     {"plain", "sfced", "sfc", "dirs"}. Groups are kept apart on purpose: every
     depot has its OWN Small Files Container and its sfcRef offsets point into
@@ -2777,7 +3015,9 @@ def _collect_depot_groups(depots: list) -> list:
     cut small files out of the wrong blob. Raises on a failed manifest fetch."""
     groups = []
     for d in depots:
-        man = _cs_get_zlib(f"{GOG_CDN}/content-system/v2/meta/{_galaxy_path(d['manifest'])}")
+        # `load` = where the manifest comes from: the GOG CDN (default) or the
+        # local depot archive — same groups, same installer either way.
+        man = (load or _cdn_depot_manifest)(d)
         dep = man.get("depot") or {}
         files, dirs = [], []
         for it in dep.get("items") or []:
@@ -2854,11 +3094,19 @@ def _resolve_depot_conflicts(groups: list, depots: list, primary: str) -> int:
 def _download_depot_fileset(plain: list, sfced: list, sfc, secure: str,
                             install_dir: Path, conn: int, bump,
                             tmp_name: str = "__gog_sfc.tmp",
-                            done: set | None = None, persist=None) -> list:
-    """Download one depot fileset into `install_dir` over `secure`: parallel chunk
-    fetch for regular files + Small-Files-Container assembly. Shared by the base
-    game, DLC and redist installs so the logic lives in one place. Returns a list
-    of (rel, exc) errors (empty = success).
+                            done: set | None = None, persist=None,
+                            fetch=None) -> list:
+    """Write one depot fileset into `install_dir`: parallel chunk fetch for
+    regular files + Small-Files-Container assembly. Shared by the base game, DLC
+    and redist installs — from the GOG CDN AND from the local depot archive — so
+    the logic lives in one place. Returns a list of (rel, exc) errors (empty =
+    success).
+
+    `fetch(chunk) -> decompressed bytes` is the data source; default = the CDN
+    over `secure`. The local archive (and later a remote archive server) passes
+    its own reader — no second install engine. Every depot path is checked
+    (DA.safe_join) BEFORE anything is written: a path escaping `install_dir`
+    aborts the whole fileset.
 
     Resume: with `done` given, rel paths already in it are skipped and every
     finished CHUNKED file is added to it, then `persist()` is called (the base
@@ -2866,10 +3114,20 @@ def _download_depot_fileset(plain: list, sfced: list, sfc, secure: str,
     SFC files not at all — the container is re-assembled as a whole on resume,
     so persisting once per tiny file would be pure (quadratic) disk churn."""
     errs: list = []
+    if fetch is None:
+        fetch = lambda c: _fetch_chunk(secure, c["compressedMd5"])
+    dests = {}
+    for f in list(plain) + list(sfced):
+        try:
+            dests[id(f)] = DA.safe_join(install_dir, f.get("path"))
+        except DA.UnsafePath as exc:
+            errs.append((str(f.get("path")), exc))
+    if errs:
+        return errs
     jobs, remaining = [], {}
     for f in plain:
         rel  = _depot_rel(f["path"])
-        dest = install_dir / rel
+        dest = dests[id(f)]
         chunks = f.get("chunks") or []
         if done is not None and rel in done:
             continue
@@ -2893,7 +3151,7 @@ def _download_depot_fileset(plain: list, sfced: list, sfc, secure: str,
         if _cancel.is_set() or errs:
             return
         try:
-            data = _fetch_chunk(secure, c["compressedMd5"])
+            data = fetch(c)
             with open(dest, "r+b") as fh:
                 fh.seek(off)
                 fh.write(data)
@@ -2922,11 +3180,11 @@ def _download_depot_fileset(plain: list, sfced: list, sfc, secure: str,
             try:
                 with open(tmp, "wb") as fh:
                     for c in sfc.get("chunks") or []:
-                        fh.write(_fetch_chunk(secure, c["compressedMd5"]))
+                        fh.write(fetch(c))
                         bump(c.get("size") or 0)
                 with open(tmp, "rb") as fh:
                     for f in sfced:
-                        dest = install_dir / _depot_rel(f["path"])
+                        dest = dests[id(f)]
                         dest.parent.mkdir(parents=True, exist_ok=True)
                         ref = f["sfcRef"]
                         fh.seek(ref["offset"])
@@ -2950,12 +3208,10 @@ def _install_dlc_via_depots(meta: dict, dlc_ids: set, install_dir: Path,
     in GOGinstall. DLC are separate products, so each depot's chunks use that
     DLC's own secure link. `wanted` = languages to install. Returns
     (ok, {installed_dlc_ids})."""
-    all_depots = meta.get("depots") or []
     ok_all, installed = True, set()
 
     for idx, did in enumerate(sorted(dlc_ids)):
-        depots = [d for d in all_depots if str(d.get("productId")) == str(did)]
-        chosen = [d for d in depots if _lang_match(d.get("languages"), wanted)] or depots
+        chosen = _select_depots(meta, did, wanted) or _product_depots(meta, did)
         if not chosen:
             _push_log(f"⚠ DLC {did}: brak depotów w tym buildzie — pomijam.")
             continue
@@ -2977,7 +3233,7 @@ def _install_dlc_via_depots(meta: dict, dlc_ids: set, install_dir: Path,
 
         for grp in groups:
             for it in grp["dirs"]:
-                (install_dir / _depot_rel(it["path"])).mkdir(parents=True, exist_ok=True)
+                _mk_depot_dir(install_dir, it["path"])
 
         total  = sum(_group_total(grp) for grp in groups)
         nfiles = sum(len(grp["plain"]) + len(grp["sfced"]) for grp in groups)
@@ -3071,8 +3327,8 @@ def _depot_install_worker(game_id, extra_keys: list, langs: list | None = None) 
 
     # 2. Depot manifests (base game, chosen languages + language-neutral) -------
     _push_log(f"Języki instalacji: {', '.join(lang_list)} (główny: {primary})")
-    depots = [d for d in (meta.get("depots") or []) if str(d.get("productId")) == pid]
-    chosen_depots = [d for d in depots if _lang_match(d.get("languages"), wanted)]
+    depots = _product_depots(meta, pid)
+    chosen_depots = _select_depots(meta, pid, wanted)
     if not chosen_depots:
         chosen_depots = depots
         _push_log("⚠ Brak depotów dla wybranych języków — instaluję wszystkie depoty gry bazowej.")
@@ -3110,7 +3366,7 @@ def _depot_install_worker(game_id, extra_keys: list, langs: list | None = None) 
     install_dir.mkdir(parents=True, exist_ok=True)
     for grp in groups:
         for d in grp["dirs"]:
-            (install_dir / _depot_rel(d["path"])).mkdir(parents=True, exist_ok=True)
+            _mk_depot_dir(install_dir, d["path"])
     done = _read_depot_state(install_dir, build_id)
     # Write the in-progress marker BEFORE any depot file lands. Some depots ship
     # a goggame-*.info among their files; if the process died after that but
@@ -3181,7 +3437,7 @@ def _depot_install_worker(game_id, extra_keys: list, langs: list | None = None) 
         if dep_files:
             _push_log(f"Instaluję zależności ({len(dep_files)} plików)…")
             for it in dep_dirs:
-                (install_dir / _depot_rel(it["path"])).mkdir(parents=True, exist_ok=True)
+                _mk_depot_dir(install_dir, it["path"])
             try:
                 dep_secure = _dependency_secure_link()
             except Exception as exc:
@@ -3328,6 +3584,1204 @@ def install_dlc(game_id, dlc_keys=None, langs=None) -> dict:
                         _task_label("DLC", game_id), queueable=True)
 
 
+# ══════════════════════════════════════════════════════════════════════════════
+#  LOCAL DEPOT ARCHIVE  (settings: archive_mode)
+#  Store a game as Galaxy v2 manifests + compressed chunks (depot_archive.py),
+#  migrate downloaded offline installers to it ONE GAME AT A TIME, and install
+#  from it without the GOG CDN. The install engine is the same one the CDN
+#  install uses (_collect_depot_groups / _download_depot_fileset) — only the
+#  data source differs, so a remote archive (EmuStart Server) is one more
+#  `load`/`fetch` pair, not a second installer.
+# ══════════════════════════════════════════════════════════════════════════════
+
+_MIG_TRACE: list | None = None      # tests: ordered (pid, stage) events
+
+
+class _GameSkip(Exception):
+    """The migration scope can't be determined safely — installers are kept."""
+
+
+class _CleanupFailed(Exception):
+    """Archive verified + committed, but deleting a replaced installer failed:
+    the queue must stop (starting the next game would grow the duplication)."""
+
+
+def _archive_mode() -> bool:
+    return bool(get_settings().get("archive_mode"))
+
+
+def _archive_root() -> Path:
+    d = get_settings().get("archive_dir") or ""
+    return Path(d) if d else BASE / "_depots"
+
+
+def _archive() -> DA.DepotArchive:
+    return DA.DepotArchive(_archive_root())
+
+
+def _mig_event(pid, stage: str, **info) -> None:
+    """One migration stage → UI (+ test trace). Stages per game, in order:
+    start, inventory, plan, manifests, download, verify, committed, cleanup,
+    done | result (skipped/error) | paused."""
+    if _MIG_TRACE is not None:
+        _MIG_TRACE.append((str(pid), stage))
+    msg = {"type": "migration", "stage": stage, "pid": str(pid)}
+    msg.update(info)
+    _send_js(msg)
+
+
+# Offline-installer language codes (GOG downloads API) → depot language prefix.
+_INST_LANG_MAP = {"cz": "cs", "cn": "zh", "jp": "ja", "br": "pt", "gk": "el", "sb": "sr"}
+
+
+def _inst_lang(code: str) -> str:
+    c = _norm_lang(code)
+    return _INST_LANG_MAP.get(c, c)
+
+
+def _now() -> str:
+    return time.strftime("%Y-%m-%dT%H:%M:%S")
+
+
+def _build_lang_set(meta: dict, product_id) -> set:
+    out = set()
+    for d in _product_depots(meta, product_id):
+        for l in d.get("languages") or []:
+            if l and l != "*":
+                out.add(_norm_lang(l))
+    return out
+
+
+def _lang_covered(meta: dict, product_id, lang: str) -> bool:
+    """Is `lang` installable from this product's depots? A product whose depots
+    are all language-neutral covers every language (one build for all)."""
+    if not _product_depots(meta, product_id):
+        return False
+    langs = _build_lang_set(meta, product_id)
+    return (not langs) or (_norm_lang(lang) in langs)
+
+
+def _plan_archive_scope(meta: dict, pid: str, langs, dlc_ids) -> dict:
+    """What to archive from one build: base depots for the covered languages
+    (+ neutral ones), each requested DLC's depots, dependencies. Never switches
+    to another language silently: a language the build lacks is reported in
+    `langs_missing`, a DLC it cannot provide in `dlc_missing` (with reason)."""
+    langs = list(dict.fromkeys(_norm_lang(x) for x in (langs or []) if x))
+    if not _product_depots(meta, pid):
+        raise _GameSkip("build Galaxy nie zawiera depotów gry bazowej")
+    langs_ok = [l for l in langs if _lang_covered(meta, pid, l)]
+    langs_missing = [l for l in langs if l not in langs_ok]
+    if not langs_ok:
+        raise _GameSkip("build Galaxy nie ma żadnego z języków: "
+                        + (", ".join(langs) or "—")
+                        + f" (dostępne: {', '.join(sorted(_build_lang_set(meta, pid))) or 'neutralne'})")
+    wanted = set(langs_ok)
+    depots = list(_select_depots(meta, pid, wanted))
+    prod_ids = {str(p.get("productId")) for p in meta.get("products") or []}
+    dlc_ok, dlc_meta_only, dlc_missing = [], [], {}
+    for did in sorted({str(x) for x in (dlc_ids or [])} - {str(pid)}):
+        all_d = _product_depots(meta, did)
+        if not all_d:
+            if did in prod_ids:
+                dlc_meta_only.append(did)       # licence/metadata-only DLC
+            else:
+                dlc_missing[did] = "DLC nie występuje w buildzie Galaxy tej gry"
+            continue
+        sel = _select_depots(meta, did, wanted)
+        if not sel:
+            dlc_missing[did] = ("brak depotów DLC w archiwizowanych językach "
+                                f"({', '.join(langs_ok)})")
+            continue
+        depots.extend(sel)
+        dlc_ok.append(did)
+    return {"langs": langs_ok, "langs_missing": langs_missing, "depots": depots,
+            "dlcs": dlc_ok, "dlc_meta_only": dlc_meta_only, "dlc_missing": dlc_missing,
+            "deps": [str(x) for x in (meta.get("dependencies") or [])]}
+
+
+def _product_name(meta: dict, pid) -> str:
+    for p in meta.get("products") or []:
+        if str(p.get("productId")) == str(pid):
+            return p.get("name") or ""
+    return ""
+
+
+def _count_collisions(arc, depots: list) -> int:
+    """Paths shipped by more than one archived depot of the same product with
+    DIFFERENT content (language variants). Archived as-is; the install picks
+    one by the primary language (_resolve_depot_conflicts)."""
+    seen: dict = {}
+    hits = set()
+    for d in depots:
+        man = arc.get_manifest("depot", d["manifest"])
+        for it in (man.get("depot") or {}).get("items") or []:
+            if it.get("type") != "DepotFile":
+                continue
+            key = (str(d.get("productId")), _depot_rel(it.get("path")).lower())
+            sig = (it.get("md5") or "",
+                   tuple(c.get("compressedMd5") for c in it.get("chunks") or []),
+                   json.dumps(it.get("sfcRef") or {}, sort_keys=True))
+            prev = seen.get(key)
+            if prev is not None and prev != sig:
+                hits.add(key)
+            seen.setdefault(key, sig)
+    return len(hits)
+
+
+def _free_bytes(path: Path) -> int | None:
+    p = Path(path)
+    while not p.exists() and p != p.parent:
+        p = p.parent
+    try:
+        return shutil.disk_usage(str(p)).free
+    except Exception:
+        return None
+
+
+def _archive_build(g: dict, pid: str, build: dict, meta: dict, plan: dict, box: dict) -> dict:
+    """Fetch what the archive lacks for `plan` (manifests, chunks, dependency
+    manifests + chunks), verify EVERYTHING the record references, then commit
+    the record as complete. Idempotent: present chunks are not re-downloaded.
+    Raises on any failure — the caller then leaves the installers untouched."""
+    arc = _archive()
+    arc.ensure()
+    build_id = str(build.get("build_id") or meta.get("buildId") or "")
+    if not build_id:
+        raise RuntimeError("build bez identyfikatora")
+    arc.put_meta(pid, build_id, meta)
+
+    _mig_event(pid, "manifests")
+    for d in plan["depots"]:
+        if not arc.has_manifest("depot", d["manifest"]):
+            arc.put_manifest("depot", d["manifest"], _cdn_depot_manifest(d))
+    dep_recs = []
+    if plan["deps"]:
+        mans, dep_missing = _dependency_manifests(plan["deps"])
+        if dep_missing:
+            raise RuntimeError("brakujące zależności w repozytorium GOG: "
+                               + ", ".join(sorted(dep_missing)))
+        for m in mans:
+            if not arc.has_manifest("dep", m["manifest"]):
+                arc.put_manifest("dep", m["manifest"], m["man"])
+            dep_recs.append({"id": m["id"], "manifest": m["manifest"]})
+
+    depots = [{"manifest": str(d["manifest"]), "productId": str(d.get("productId")),
+               "languages": list(d.get("languages") or []),
+               "size": d.get("size"), "compressedSize": d.get("compressedSize")}
+              for d in plan["depots"]]
+    prev = arc.read_record(pid, build_id) or {}
+    products = [{"id": pid, "role": "base", "name": g.get("title") or _product_name(meta, pid),
+                 "has_files": True}]
+    for did in plan["dlcs"] + plan["dlc_meta_only"]:
+        products.append({"id": did, "role": "dlc", "name": _product_name(meta, did) or f"DLC {did}",
+                         "has_files": did in plan["dlcs"]})
+    rec = {
+        "product_id": pid, "title": g.get("title") or "", "slug": g.get("slug") or "",
+        "build_id": build_id, "version_name": build.get("version_name") or "",
+        "os": _MY_OS, "generation": 2,
+        "install_directory": meta.get("installDirectory") or g.get("slug") or pid,
+        "products": products, "depots": depots, "dependencies": dep_recs,
+        "scope": {"languages": sorted(plan["langs"]),
+                  "dlcs": sorted(plan["dlcs"] + plan["dlc_meta_only"])},
+        "state": DA.STATE_INCOMPLETE,
+        "created": prev.get("created") or _now(),
+    }
+    rec["collisions"] = _count_collisions(arc, depots)
+    arc.write_record(rec)                      # visible as "incomplete" from now on
+
+    chunks = arc.record_chunks(rec)
+    uniq = {}
+    for c in chunks:
+        uniq.setdefault((c.get("compressedMd5") or "").lower(), c)
+    rec["compressed_size"] = sum(int(c.get("compressedSize") or 0) for c in uniq.values())
+    rec["size"] = sum(int(c.get("size") or 0) for c in uniq.values())
+    missing = arc.missing_chunks(chunks)
+    need = sum(int(c.get("compressedSize") or 0) for c in missing)
+    free = _free_bytes(arc.root)
+    # Space for the NEW data only — installers that will be deleted later are
+    # deliberately not counted as available.
+    if free is not None and need and free < need + 64 * 1024 * 1024:
+        raise RuntimeError(f"za mało miejsca na archiwum: potrzeba {_human(need)} "
+                           f"(+64 MB zapasu), wolne {_human(free)}")
+    plan["added_bytes"] = need
+
+    # Which secure link serves which chunk: base / DLC product, or the
+    # dependency store.
+    owner = {}
+    for d in depots:
+        for c in DA.manifest_chunks(arc.get_manifest("depot", d["manifest"])):
+            owner.setdefault((c.get("compressedMd5") or "").lower(), d["productId"])
+    for d in dep_recs:
+        for c in DA.manifest_chunks(arc.get_manifest("dep", d["manifest"])):
+            owner.setdefault((c.get("compressedMd5") or "").lower(), "__dep__")
+
+    _mig_event(pid, "download", bytes=need, chunks=len(missing))
+    if missing:
+        _push_log(f"Archiwizuję: {len(missing)} chunków, {_human(need)} do pobrania.")
+        links, llock = {}, threading.Lock()
+
+        def link_for(prod):
+            with llock:
+                if prod not in links:
+                    links[prod] = (_dependency_secure_link() if prod == "__dep__"
+                                   else _get_secure_link(str(prod), box))
+                return links[prod]
+
+        hub = _ProgressHub(need)
+        hub.start(1, f"Archiwum: {g.get('title') or pid}", need)
+        got, glock = {"n": 0}, threading.Lock()
+        errs = []
+
+        def job(c):
+            if _cancel.is_set() or errs:
+                return
+            md5 = (c.get("compressedMd5") or "").lower()
+            try:
+                data = _fetch_chunk_raw(link_for(owner.get(md5, pid)), md5)
+                arc.put_chunk(md5, data)
+                with glock:
+                    got["n"] += len(data)
+                hub.progress(1, got["n"])
+            except Exception as exc:
+                errs.append((md5, exc))
+
+        with ThreadPoolExecutor(max_workers=get_download_threads()) as ex:
+            for fu in as_completed([ex.submit(job, c) for c in missing]):
+                fu.result()
+        hub.finish(1, not errs and not _cancel.is_set())
+        if _cancel.is_set():
+            raise RuntimeError("anulowano")
+        if errs:
+            raise RuntimeError(f"pobieranie chunków: {len(errs)} błędów, np. "
+                               f"{errs[0][0][:12]}…: {errs[0][1]}")
+
+    _mig_event(pid, "verify", chunks=len(uniq))
+    _push_log(f"Weryfikuję archiwum ({len(uniq)} chunków, {_human(rec['compressed_size'])})…")
+    res = arc.verify_chunks(list(uniq.values()), cancel=_cancel.is_set)
+    if res["missing"] or res["corrupt"]:
+        for m in res["corrupt"]:           # drop bad copies → the next run refetches them
+            try:
+                arc.chunk_path(m).unlink()
+            except OSError:
+                pass
+        raise RuntimeError(f"weryfikacja archiwum nieudana: brak {len(res['missing'])}, "
+                           f"uszkodzonych {len(res['corrupt'])} chunków")
+    rec["state"] = DA.STATE_COMPLETE
+    rec["verified"] = _now()
+    arc.write_record(rec)                      # ← trwałe zatwierdzenie
+    _mig_event(pid, "committed")
+    return rec
+
+
+def _archive_scope(g: dict, langs, dlcs, box: dict) -> tuple:
+    """Archive the current GOG build of `g` for languages/DLC (merged with what
+    an earlier record of the same build already holds — scope never shrinks).
+    Returns (record, plan, build, meta, built_new)."""
+    pid = str(g["product"].get("id") or g["id"])
+    _mig_event(pid, "plan")
+    try:
+        build = _pick_build(pid)
+        meta = _cs_get_zlib(build["link"])
+    except Exception as exc:
+        raise _GameSkip(f"brak obsługiwanego buildu Galaxy (generation 2, {_MY_OS}): {exc}")
+    build_id = str(build.get("build_id") or meta.get("buildId") or "")
+    # Everything the build has: every language of the base game and every owned DLC — installers often held
+    # one language where the depots have several; Lumen / EmuStart pick languages and DLC at install time.
+    langs = list(langs or []) + sorted(_build_lang_set(meta, pid))
+    owned = _owned_ids_cached()
+    if owned is None:
+        _push_log("⚠ Nie udało się pobrać listy posiadanych produktów — DLC tylko z instalatorów i archiwum.")
+    else:
+        dlcs = set(dlcs or ()) | {str(p.get("productId")) for p in meta.get("products") or []
+                                  if str(p.get("productId")) != pid and str(p.get("productId")) in owned}
+    arc = _archive()
+    existing = arc.read_record(pid, build_id) if build_id else None
+    if existing:
+        langs = list(langs or []) + list((existing.get("scope") or {}).get("languages") or [])
+        dlcs = set(dlcs or ()) | set((existing.get("scope") or {}).get("dlcs") or [])
+    plan = _plan_archive_scope(meta, pid, langs, dlcs)
+    for l in plan["langs_missing"]:
+        _push_log(f"⚠ Język „{l}” nie występuje w buildzie Galaxy — nie archiwizuję go "
+                  "(bez zamiany na inny język).")
+    for did, why in plan["dlc_missing"].items():
+        _push_log(f"⚠ DLC {did}: {why}.")
+    if existing and existing.get("state") == DA.STATE_COMPLETE:
+        ok, _ = DA.record_scope_covers(existing, plan["langs"], plan["dlcs"] + plan["dlc_meta_only"])
+        if ok and not arc.missing_chunks(arc.record_chunks(existing)):
+            plan["added_bytes"] = 0
+            return existing, plan, build, meta, False
+    rec = _archive_build(g, pid, build, meta, plan, box)
+    return rec, plan, build, meta, True
+
+
+def _installer_rows_for_migration(man: dict) -> list:
+    rows = [r for r in man.get("installers", []) if (r.get("os") or "").lower() == _MY_OS]
+    rows += [r for r in man.get("dlcs", [])
+             if r.get("owned", True) and ":installer:" in (r.get("key") or "")
+             and (r.get("os") or "").lower() == _MY_OS]
+    return rows
+
+
+def _size_matches(disk: int, api: int) -> bool:
+    """The GOG products API reports installer file sizes ROUNDED to whole MiB
+    (e.g. 1068498944 = 1019 MiB for a 1069242312-byte file), so an exact
+    comparison never matches. Accept the rounding window; the exact current
+    GOG filename (with its build tag) is the primary identity check."""
+    return abs(int(disk) - int(api)) < 1024 * 1024
+
+
+def _inventory_installers(man: dict, box: dict, folder: Path) -> dict:
+    """Assign every installer-type file in the game's download folder to the
+    manifest row it belongs to (base installer EXE/BIN parts, DLC installer).
+    Matching is by the exact current GOG filename (resolved downlink) AND the
+    size (within the API's MiB rounding — see _size_matches). Results per file: assigned | ambiguous | unassigned — only an
+    `assigned` file may ever be deleted."""
+    files = {}
+    for pat in INSTALLER_EXTS:
+        for f in folder.glob(pat):
+            if f.is_file():
+                files[f.name] = f
+    disk_sizes = [f.stat().st_size for f in files.values()]
+
+    owners: dict = {}
+    resolve_failed = 0
+    for row in _installer_rows_for_migration(man):
+        kind = "dlc" if row.get("category") == "dlc" else "base"
+        dlc = (row.get("key") or "").split(":")[1] if kind == "dlc" else ""
+        for part in row.get("parts") or []:
+            sz = int(part.get("size") or 0)
+            if not sz or not any(_size_matches(d, sz) for d in disk_sizes):
+                continue            # no file of that size on disk ⇒ cannot be this part
+            try:
+                cdn = (_resolve_downlink(part["downlink"], box) or {}).get("downlink")
+                if not cdn:
+                    raise RuntimeError("brak downlink")
+                fname = _filename_from_url(cdn)
+            except Exception as exc:
+                log(f"inventory resolve {row.get('name')}: {exc}")
+                resolve_failed += 1
+                continue
+            f = files.get(fname)
+            if f is not None and _size_matches(f.stat().st_size, sz):
+                owners.setdefault(fname, []).append({
+                    "kind": kind, "dlc": dlc, "lang": _inst_lang(row.get("lang") or ""),
+                    "version": row.get("version") or "", "row": row.get("name") or ""})
+    entries = []
+    for name in sorted(files):
+        f = files[name]
+        e = {"name": name, "path": str(f), "size": f.stat().st_size}
+        own = owners.get(name) or []
+        products = {(o["kind"], o["dlc"]) for o in own}
+        if not own:
+            e.update(status="unassigned",
+                     reason="nie odpowiada żadnemu bieżącemu instalatorowi GOG "
+                            "(stara wersja, inny system lub obcy plik)")
+        elif len(products) > 1:
+            e.update(status="ambiguous",
+                     reason="plik pasuje do kilku produktów: "
+                            + ", ".join(sorted(o["row"] for o in own)))
+        else:
+            kind, dlc = next(iter(products))
+            # One file listed under several languages = a multi-language
+            # installer: it is replaced only if ALL those languages are archived.
+            e.update(status="assigned", kind=kind, dlc=dlc,
+                     langs=sorted({o["lang"] for o in own if o["lang"]}),
+                     version=next((o["version"] for o in own if o["version"]), ""))
+        entries.append(e)
+    return {"files": entries, "resolve_failed": resolve_failed}
+
+
+def _under(p: Path, root: Path) -> bool:
+    try:
+        Path(p).resolve().relative_to(Path(root).resolve())
+        return True
+    except (ValueError, OSError):
+        return False
+
+
+def _delete_installer_file(p: Path) -> None:
+    """Hard delete (NOT the Recycle Bin — that would free no space). Separate
+    function so tests can simulate a failure."""
+    p.unlink()
+
+
+def _run_cleanup(arc, pid: str, j: dict, res: dict) -> None:
+    """Delete exactly the frozen list in the journal — nothing else. Resumable:
+    already-deleted / already-missing entries are skipped. Every path is
+    re-checked (direct child of the game's download folder, under BASE,
+    installer extension, size unchanged since the inventory)."""
+    j["phase"] = DA.PH_CLEANUP
+    arc.write_journal(pid, j)
+    _mig_event(pid, "cleanup", files=len(j.get("delete") or []))
+    folder = Path(j.get("folder") or "")
+    done = set(j.get("deleted") or [])
+    exts = tuple(p.lstrip("*").lower() for p in INSTALLER_EXTS)
+    for it in j.get("delete") or []:
+        p = Path(it["path"])
+        if str(p) in done:
+            continue
+        if (p.parent != folder or not _under(folder, BASE)
+                or not p.name.lower().endswith(exts)):
+            res["kept"].append({"name": p.name, "reason": "ścieżka poza zatwierdzonym katalogiem — nie usuwam"})
+            continue
+        if not p.exists():
+            done.add(str(p))
+            continue
+        if p.stat().st_size != int(it.get("size") or -1):
+            res["kept"].append({"name": p.name, "reason": "plik zmienił się od inwentaryzacji — nie usuwam"})
+            continue
+        try:
+            _delete_installer_file(p)
+        except Exception as exc:
+            j["phase"] = DA.PH_CLEANUP_FAILED
+            j["error"] = f"{p.name}: {exc}"
+            j["deleted"] = sorted(done)
+            arc.write_journal(pid, j)
+            raise _CleanupFailed(j["error"])
+        done.add(str(p))
+        res["deleted"].append(p.name)
+        res["deleted_bytes"] += int(it.get("size") or 0)
+        j["deleted"] = sorted(done)
+        j["deleted_bytes"] = int(j.get("deleted_bytes") or 0) + int(it.get("size") or 0)
+        arc.write_journal(pid, j)
+        _push_log(f"🗑 Usunięto zastąpiony instalator: {p.name} ({_human(int(it.get('size') or 0))})")
+    j["phase"] = DA.PH_DONE
+    j["finished"] = _now()
+    j.pop("error", None)
+    arc.write_journal(pid, j)                  # ← zapis zakończenia migracji
+
+
+def _prune_old_builds(arc, pid: str, keep_build: str) -> None:
+    """After a newer build was committed: drop older records of this product and
+    garbage-collect chunks no remaining record (any game/build/dependency)
+    references. Shared chunks stay."""
+    old = [r for r in arc.list_records(pid) if str(r.get("build_id")) != str(keep_build)]
+    if not old:
+        return
+    for r in old:
+        arc.remove_record(pid, str(r["build_id"]))
+    try:
+        n, b = arc.gc()
+        if n:
+            _push_log(f"Archiwum: usunięto {n} nieużywanych chunków starszych buildów ({_human(b)}).")
+    except Exception as exc:
+        log(f"archive gc skipped: {exc}")
+
+
+def _new_result(g: dict) -> dict:
+    return {"id": g["id"], "title": g["title"], "status": "unchanged", "reason": "",
+            "deleted": [], "deleted_bytes": 0, "added_bytes": 0, "kept": [],
+            "version_change": "", "build_id": ""}
+
+
+def _migrate_game(g: dict, index: int = 1, total: int = 1) -> dict:
+    """ONE game, start to finish: inventory → plan → fetch → verify → commit →
+    delete ONLY its replaced installers → record completion. The caller starts
+    the next game only after this returns. Raises _CleanupFailed (stop the
+    queue) or _GameSkip; any other exception leaves the installers untouched."""
+    pid = str(g["product"].get("id") or g["id"])
+    res = _new_result(g)
+    arc = _archive()
+    arc.ensure()
+    try:
+        export_game_meta(g)
+    except Exception as exc:
+        log(f"meta export {pid} :: {exc}")
+
+    # Restart after "archive verified, cleanup pending": finish exactly the
+    # committed list, download nothing.
+    j = arc.read_journal(pid)
+    if j and j.get("phase") in DA.PENDING_CLEANUP:
+        _push_log("Archiwum tej gry jest zweryfikowane — dokańczam sprzątanie zatwierdzonej listy.")
+        res["build_id"] = j.get("build_id") or ""
+        _run_cleanup(arc, pid, j, res)
+        _prune_old_builds(arc, pid, j.get("build_id") or "")
+        res["status"] = "migrated"
+        _mig_event(pid, "done", result="migrated")
+        return res
+
+    _mig_event(pid, "inventory")
+    dl = _check_downloaded_for_game(g, scan_downloaded_games())
+    folder = Path(dl["installer_path"]) if dl["downloaded"] else None
+    box = _access_token_box()
+    if not box.get("access"):
+        raise RuntimeError("brak logowania GOG")
+    inv = {"files": [], "resolve_failed": 0}
+    if folder is not None and dl.get("has_installer"):
+        man = get_download_manifest(g["id"])
+        if not man.get("ok"):
+            raise RuntimeError(f"manifest pobrań: {man.get('error')}")
+        inv = _inventory_installers(man, box, folder)
+    assigned = [e for e in inv["files"] if e["status"] == "assigned"]
+    for e in inv["files"]:
+        if e["status"] != "assigned":
+            res["kept"].append({"name": e["name"], "reason": e["reason"]})
+    if inv["resolve_failed"]:
+        _push_log(f"⚠ {inv['resolve_failed']} link(ów) GOG nie rozwiązało się — "
+                  "odpowiadające im pliki zostają.")
+
+    records = arc.list_records(pid)
+    if not assigned and not records:
+        if inv["files"]:
+            raise _GameSkip("nie rozpoznano żadnego instalatora tej gry "
+                            "(pliki zostają: " + ", ".join(e["name"] for e in inv["files"][:4]) + ")")
+        res["reason"] = "brak instalatorów do migracji (tylko extras)"
+        _mig_event(pid, "done", result="unchanged")
+        return res
+
+    st_langs = [_inst_lang(x) for x in (get_settings().get("update_langs") or ["en"])]
+    disk_langs = sorted({l for e in assigned for l in e.get("langs") or []})
+    disk_dlcs = {e["dlc"] for e in assigned if e.get("kind") == "dlc" and e.get("dlc")}
+    prev = next((r for r in records if r.get("state") == DA.STATE_COMPLETE), None) \
+        or (records[0] if records else None)
+    langs = st_langs + disk_langs + list(((prev or {}).get("scope") or {}).get("languages") or [])
+    dlcs = disk_dlcs | set(((prev or {}).get("scope") or {}).get("dlcs") or [])
+
+    arc.write_journal(pid, {"product_id": pid, "title": g["title"], "phase": DA.PH_PLANNED,
+                            "folder": str(folder) if folder else "", "started": _now()})
+    rec, plan, build, meta, built_new = _archive_scope(g, langs, dlcs, box)
+    res["build_id"] = rec["build_id"]
+    res["added_bytes"] = int(plan.get("added_bytes") or 0)
+
+    inst_ver = sorted({e["version"] for e in assigned if e.get("version")})
+    bver = rec.get("version_name") or ""
+    if prev and str(prev.get("build_id")) != str(rec["build_id"]):
+        res["version_change"] = (f"archiwum: build {prev.get('build_id')} "
+                                 f"({prev.get('version_name') or '?'}) → {rec['build_id']} ({bver or '?'})")
+    elif inst_ver and bver and bver not in inst_ver:
+        res["version_change"] = f"instalator {'/'.join(inst_ver)} → depot {bver} (build {rec['build_id']})"
+    if res["version_change"]:
+        _push_log(f"ℹ Zmiana wersji: {res['version_change']}")
+
+    # Which installers this verified archive really replaces.
+    scope_l = set((rec.get("scope") or {}).get("languages") or [])
+    scope_d = set((rec.get("scope") or {}).get("dlcs") or [])
+    delete = []
+    for e in assigned:
+        prod = pid if e["kind"] == "base" else e["dlc"]
+        why = ""
+        if e["kind"] == "dlc" and prod not in scope_d:
+            why = f"DLC {prod} nie jest w archiwum ({plan['dlc_missing'].get(prod, 'poza zakresem')})"
+        else:
+            meta_only = prod in (plan.get("dlc_meta_only") or [])
+            for l in e.get("langs") or []:
+                if l not in scope_l or (not meta_only and not _lang_covered(meta, prod, l)):
+                    why = f"język {l} niedostępny w archiwizowanym buildzie"
+                    break
+        if why:
+            res["kept"].append({"name": e["name"], "reason": why})
+        else:
+            delete.append({"path": e["path"], "size": e["size"], "name": e["name"]})
+
+    j = {"product_id": pid, "title": g["title"], "build_id": rec["build_id"],
+         "phase": DA.PH_COMMITTED, "folder": str(folder) if folder else "",
+         "delete": delete, "deleted": [], "deleted_bytes": 0,
+         "kept": res["kept"], "committed": _now()}
+    arc.write_journal(pid, j)                  # frozen delete list
+    _run_cleanup(arc, pid, j, res)
+    _prune_old_builds(arc, pid, rec["build_id"])
+
+    if res["deleted"]:
+        res["status"] = "migrated"
+    elif built_new:
+        res["status"] = "updated"
+    elif res["kept"] and assigned:
+        res["status"] = "skipped"
+        res["reason"] = "żaden instalator nie ma zweryfikowanego zastępstwa"
+    else:
+        res["status"] = "unchanged"
+    _mig_event(pid, "done", result=res["status"])
+    return res
+
+
+def _archive_all_worker(only_ids=None) -> bool:
+    """'Update all' in archive mode: a strictly sequential per-game pipeline.
+    Game N+1 starts only after game N is archived, verified, committed AND its
+    replaced installers are deleted. A failed download/verification is reported
+    and the queue moves on (installers untouched); a failed deletion STOPS it."""
+    arc = _archive()
+    downloaded = scan_downloaded_games()
+    rec_pids, pend = set(), set()
+    if arc.exists():
+        rec_pids = {str(r.get("product_id")) for r in arc.list_records()}
+        pend = {str(j.get("product_id")) for j in arc.pending_cleanups()}
+    pid_of = lambda g: str(g["product"].get("id") or g["id"])
+    targets = [g for g in scan_games()
+               if (only_ids is None or g["id"] in only_ids)
+               and (_check_downloaded_for_game(g, downloaded)["downloaded"]
+                    or pid_of(g) in rec_pids or pid_of(g) in pend)]
+    targets.sort(key=lambda g: 0 if pid_of(g) in pend else 1)     # finish pending cleanups first
+    report = {"migrated": [], "updated": [], "unchanged": [], "skipped": [], "errors": [],
+              "kept": [], "paused": None, "deleted_bytes": 0, "added_bytes": 0, "total": len(targets)}
+    if not targets:
+        _push_log("Brak pobranych gier ani archiwów do aktualizacji.")
+        _emit_archive_report(report)
+        return True
+
+    _push_log(f"── Aktualizacja wszystkich (archiwum depotów): {len(targets)} gier — "
+              "po jednej, sprzątanie przed następną ──")
+    for i, g in enumerate(targets, 1):
+        if _cancel.is_set():
+            _push_log("⚠ Przerwano — pozostałe gry pominięte.")
+            break
+        pid = pid_of(g)
+        _push_log(f"\n[{i}/{len(targets)}] {g['title']}")
+        _mig_event(pid, "start", index=i, total=len(targets), title=g["title"])
+        try:
+            r = _migrate_game(g, i, len(targets))
+        except _CleanupFailed as exc:
+            report["paused"] = {"title": g["title"], "error": str(exc)}
+            _push_log(f"⛔ Archiwum „{g['title']}” jest zweryfikowane, ale usuwanie instalatorów "
+                      f"nie powiodło się ({exc}). Kolejka WSTRZYMANA — popraw problem "
+                      "(np. zamknij program blokujący plik) i uruchom ponownie.")
+            _mig_event(pid, "paused", error=str(exc), index=i, total=len(targets))
+            break
+        except _GameSkip as exc:
+            report["skipped"].append({"title": g["title"], "reason": str(exc)})
+            _push_log(f"↷ Pominięto (instalatory zostają): {exc}")
+            _mig_event(pid, "result", result="skipped", reason=str(exc))
+        except Exception as exc:
+            report["errors"].append({"title": g["title"], "error": str(exc)})
+            _push_log(f"✗ {g['title']}: {exc} — instalatory nietknięte.")
+            _mig_event(pid, "result", result="error", reason=str(exc))
+            try:
+                j = arc.read_journal(pid)
+                if j and j.get("phase") not in DA.PENDING_CLEANUP:
+                    j["phase"], j["error"] = "failed", str(exc)
+                    arc.write_journal(pid, j)
+            except Exception:
+                pass
+        else:
+            report["deleted_bytes"] += r["deleted_bytes"]
+            report["added_bytes"] += r["added_bytes"]
+            entry = {"title": r["title"], "deleted": len(r["deleted"]),
+                     "deleted_bytes": r["deleted_bytes"], "version_change": r["version_change"],
+                     "reason": r["reason"]}
+            report.get(r["status"], report["unchanged"]).append(entry)
+            for k in r["kept"]:
+                report["kept"].append({"title": r["title"], **k})
+        # Extras stay classic files — refresh them (never touches installers).
+        dl = _check_downloaded_for_game(g, scan_downloaded_games())
+        ex_dir = Path(dl["installer_path"]) / "extras" if dl.get("installer_path") else None
+        has_extras = (any(ex_dir.iterdir()) if ex_dir is not None and ex_dir.is_dir() else False)             if get_settings().get("extras_subdir", True) else bool(dl.get("extras_files"))
+        if has_extras and not _cancel.is_set():
+            try:
+                _update_worker(g["id"], extras_only=True)
+            except Exception as exc:
+                _push_log(f"⚠ Extras {g['title']}: {exc}")
+
+    _emit_archive_report(report)
+    return not report["errors"] and not report["paused"]
+
+
+def _emit_archive_report(report: dict) -> None:
+    net = report["deleted_bytes"] - report["added_bytes"]
+    lines = [
+        "══ Raport archiwizacji ══",
+        f"Zmigrowane: {len(report['migrated'])} · zaktualizowane archiwa: {len(report['updated'])} · "
+        f"bez zmian: {len(report['unchanged'])} · pominięte: {len(report['skipped'])} · "
+        f"błędy: {len(report['errors'])}",
+        f"Usunięte instalatory: {_human(report['deleted_bytes'])} · nowe dane w archiwum: "
+        f"{_human(report['added_bytes'])} · bilans wolnego miejsca: "
+        f"{'+' if net >= 0 else '−'}{_human(abs(net))}",
+    ]
+    for s in report["skipped"]:
+        lines.append(f"  ↷ {s['title']}: {s['reason']}")
+    for e in report["errors"]:
+        lines.append(f"  ✗ {e['title']}: {e['error']}")
+    for k in report["kept"][:30]:
+        lines.append(f"  • zachowano {k['title']} / {k['name']}: {k['reason']}")
+    if report["paused"]:
+        lines.append(f"  ⛔ WSTRZYMANO przy „{report['paused']['title']}”: {report['paused']['error']}")
+    for ln in lines:
+        _push_log(ln)
+    _send_js({"type": "migration_report", "report": report})
+    _send_js({"type": "completion", "speed": "OK",
+              "filename": f"Archiwum: {len(report['migrated'])} zmigrowanych, "
+                          f"{len(report['errors'])} błędów"
+                          + (", WSTRZYMANO" if report["paused"] else "")})
+
+
+def _archive_download_worker(g: dict, chosen: list) -> bool:
+    """'Download' in archive mode: installers / DLC installers / language packs
+    of the selection become archive scope (their languages + DLC ids); extras
+    are downloaded as files the classic way; patches are not needed (a depot
+    build is always complete)."""
+    inst = [r for r in chosen if r.get("category") in ("installer", "language_pack")]
+    dlc_rows = [r for r in chosen if r.get("category") == "dlc" and ":installer:" in (r.get("key") or "")]
+    patches = [r for r in chosen if r.get("category") == "patch"
+               or (r.get("category") == "dlc" and ":patch:" in (r.get("key") or ""))]
+    extras = [r for r in chosen if r.get("category") == "extra"]
+    ok = True
+    if inst or dlc_rows:
+        langs = [_inst_lang(r["lang"]) for r in inst if r.get("lang")] \
+            or [_inst_lang(x) for x in (get_settings().get("update_langs") or ["en"])]
+        dlcs = _parse_dlc_ids([r["key"] for r in dlc_rows])
+        box = _access_token_box()
+        if not box.get("access"):
+            _push_log("✗ Brak logowania GOG — zaloguj się w Ustawieniach.")
+            return False
+        pid = str(g["product"].get("id") or g["id"])
+        try:
+            rec, plan, *_ = _archive_scope(g, langs, dlcs, box)
+            _push_log(f"✓ Archiwum depotów: build {rec['build_id']} — języki "
+                      f"{', '.join(rec['scope']['languages'])}, DLC {len(rec['scope']['dlcs'])}, "
+                      f"{_human(rec.get('compressed_size') or 0)} (stan: kompletne).")
+            _mig_event(pid, "done", result="archived")
+        except Exception as exc:
+            _push_log(f"✗ Archiwizacja nieudana: {exc}")
+            ok = False
+    if patches:
+        _push_log(f"ℹ Pominięto {len(patches)} łatek — archiwum depotów zawiera pełny build.")
+    if extras:
+        ok = _download_selection(g, extras) and ok
+    return ok
+
+
+# ── install from the local archive ────────────────────────────────────────────
+
+def _archive_records_for(game_id):
+    g = next((x for x in scan_games() if x["id"] == str(game_id)), None)
+    if not g:
+        return None, "", None, []
+    pid = str(g["product"].get("id") or g["id"])
+    arc = _archive()
+    return g, pid, arc, (arc.list_records(pid) if arc.exists() else [])
+
+
+def _pick_record(recs: list, build_id=None):
+    if build_id:
+        return next((r for r in recs if str(r.get("build_id")) == str(build_id)), None)
+    return next((r for r in recs if r.get("state") == DA.STATE_COMPLETE), None) \
+        or (recs[0] if recs else None)
+
+
+def get_archive_info(game_id) -> dict:
+    g, pid, arc, recs = _archive_records_for(game_id)
+    if not g:
+        return {"ok": False, "error": "Gra nie znaleziona"}
+    builds = []
+    for r in recs:
+        try:
+            meta = arc.get_meta(pid, r["build_id"])
+            blangs = sorted(_build_lang_set(meta, pid))
+        except Exception:
+            blangs = []
+        builds.append({
+            "build_id": r.get("build_id"), "version": r.get("version_name") or "",
+            "state": r.get("state"), "languages": (r.get("scope") or {}).get("languages") or [],
+            "build_languages": blangs,
+            "dlcs": [p for p in r.get("products") or [] if p.get("role") == "dlc"],
+            "dependencies": [d.get("id") for d in r.get("dependencies") or []],
+            "size": r.get("size") or 0, "compressed_size": r.get("compressed_size") or 0,
+            "install_directory": r.get("install_directory") or g["slug"],
+            "collisions": r.get("collisions") or 0,
+            "created": r.get("created"), "verified": r.get("verified"),
+        })
+    j = arc.read_journal(pid) if arc.exists() else None
+    inst = scan_installed_games().get(g["id"])
+    return {"ok": True, "game_id": g["id"], "title": g["title"], "builds": builds,
+            "pending_cleanup": bool(j and j.get("phase") in DA.PENDING_CLEANUP),
+            "journal_phase": (j or {}).get("phase"), "journal_error": (j or {}).get("error"),
+            "installed": bool(inst), "installed_path": inst,
+            "installed_dlc": _installed_dlc_ids(inst, pid),
+            "games_dir": str(GOG_GAMES), "archive_dir": str(arc.root)}
+
+
+def _rec_selection(arc, rec: dict, langs: list, dlcs: list) -> tuple:
+    """(base depots, {dlc: depots}, gaps) for an install selection — strict:
+    no silent language fallback."""
+    pid = str(rec["product_id"])
+    view = {"depots": rec.get("depots") or []}
+    wanted = {_norm_lang(l) for l in langs}
+    _, gaps = DA.record_scope_covers(rec, [_norm_lang(l) for l in langs], dlcs)
+    base = _select_depots(view, pid, wanted)
+    per_dlc = {str(d): _select_depots(view, d, wanted) for d in dlcs}
+    for did, sel in per_dlc.items():
+        if not sel and _product_depots(view, did):
+            gaps.append(f"DLC {did} nie ma depotów w wybranych językach")
+    for d in rec.get("depots") or []:
+        if not arc.has_manifest("depot", d["manifest"]):
+            gaps.append(f"manifest depotu {d['manifest'][:12]}…")
+    for d in rec.get("dependencies") or []:
+        if not arc.has_manifest("dep", d["manifest"]):
+            gaps.append(f"manifest zależności {d.get('id')}")
+    return base, per_dlc, gaps
+
+
+def check_archive_install(game_id, build_id=None, langs=None, dlcs=None, deep=False) -> dict:
+    """Pre-install check of a selection: exact gaps (languages / DLC outside the
+    archived scope, missing manifests), missing chunks and — with deep=True —
+    corrupt ones. Never downloads anything."""
+    g, pid, arc, recs = _archive_records_for(game_id)
+    rec = _pick_record(recs, build_id)
+    if not g or not rec:
+        return {"ok": False, "error": "Brak lokalnego archiwum tej gry"}
+    langs = [str(l).lower() for l in (langs or []) if l] or list((rec.get("scope") or {}).get("languages") or [])
+    dlcs = [str(d) for d in (dlcs or [])]
+    base, per_dlc, gaps = _rec_selection(arc, rec, langs, dlcs)
+    chunks = []
+    try:
+        for d in base + [x for v in per_dlc.values() for x in v]:
+            chunks += DA.manifest_chunks(arc.get_manifest("depot", d["manifest"]))
+        for d in rec.get("dependencies") or []:
+            chunks += DA.manifest_chunks(arc.get_manifest("dep", d["manifest"]))
+    except DA.ArchiveError as exc:
+        gaps.append(str(exc))
+    missing = arc.missing_chunks(chunks)
+    corrupt = []
+    if deep:
+        res = arc.verify_chunks(chunks, cancel=_cancel.is_set)
+        absent = {(c.get("compressedMd5") or "").lower() for c in missing}
+        corrupt = [m for m in res["corrupt"] if m not in absent]
+    return {"ok": True, "build_id": rec["build_id"], "state": rec.get("state"),
+            "complete": not gaps and not missing and not corrupt and rec.get("state") == DA.STATE_COMPLETE,
+            "gaps": gaps, "missing_chunks": len(missing),
+            "missing_bytes": sum(int(c.get("compressedSize") or 0) for c in missing),
+            "corrupt_chunks": len(corrupt)}
+
+
+def _verify_installed(files: list, install_dir: Path) -> list:
+    """Post-install check of every written file: size, and MD5 where the
+    manifest provides one. Returns [(rel, problem)]."""
+    probs = []
+    for f in files:
+        rel = _depot_rel(f.get("path"))
+        try:
+            p = DA.safe_join(install_dir, rel)
+        except DA.UnsafePath as exc:
+            probs.append((rel, str(exc)))
+            continue
+        want = (f["sfcRef"]["size"] if f.get("sfcRef")
+                else sum(int(c.get("size") or 0) for c in f.get("chunks") or []))
+        try:
+            if p.stat().st_size != want:
+                probs.append((rel, f"rozmiar {p.stat().st_size} ≠ {want}"))
+                continue
+            if f.get("md5") and _md5_path(p).lower() != str(f["md5"]).lower():
+                probs.append((rel, "MD5 się nie zgadza"))
+        except FileNotFoundError:
+            probs.append((rel, "brak pliku"))
+    return probs
+
+
+def _installed_build_id(install_dir: Path, pid: str) -> str:
+    try:
+        info = json.loads((install_dir / f"goggame-{pid}.info").read_text(encoding="utf-8"))
+        return str(info.get("buildId") or "")
+    except Exception:
+        return ""
+
+
+def _archive_install_worker(game_id, build_id=None, langs=None, dlcs=None,
+                            target=None, dlc_only: bool = False) -> bool:
+    """Install (or add DLC) from the LOCAL archive only — no GOG request at all.
+    Missing / corrupt data fails with the exact list; downloading it is a
+    separate, explicit action (repair_archive)."""
+    g, pid, arc, recs = _archive_records_for(game_id)
+    if not g:
+        _push_log("✗ Gra nie znaleziona.")
+        return False
+    rec = _pick_record(recs, build_id)
+    if not rec:
+        _push_log("✗ Brak lokalnego archiwum depotów tej gry.")
+        return False
+    rid = str(rec["build_id"])
+    lang_list = [_norm_lang(l) for l in (langs or []) if l] \
+        or [l for l in _depot_langs_setting() if l in ((rec.get("scope") or {}).get("languages") or [])] \
+        or list((rec.get("scope") or {}).get("languages") or [])[:1]
+    if not lang_list:
+        _push_log("✗ Nie wybrano języka.")
+        return False
+    wanted, primary = set(lang_list), lang_list[0]
+    dlc_ids = [str(d) for d in (dlcs or [])]
+    base, per_dlc, gaps = _rec_selection(arc, rec, lang_list, dlc_ids)
+    if gaps:
+        _push_log("✗ Wybrany zakres nie jest w lokalnym archiwum: " + "; ".join(gaps)
+                  + " — użyj „Pobierz brakujące”, aby je dociągnąć.")
+        return False
+    if rec.get("state") != DA.STATE_COMPLETE:
+        _push_log("✗ Archiwum tej wersji jest niekompletne (nie zweryfikowane) — "
+                  "użyj „Napraw / pobierz brakujące”.")
+        return False
+
+    installed = scan_installed_games()
+    if dlc_only:
+        if g["id"] not in installed:
+            _push_log("✗ Gra nie jest zainstalowana — najpierw zainstaluj grę.")
+            return False
+        install_dir = Path(installed[g["id"]])
+        ib = _installed_build_id(install_dir, pid)
+        if ib and ib != rid:
+            _push_log(f"✗ DLC z archiwum należą do buildu {rid}, a zainstalowana gra ma build {ib} "
+                      "— niezgodne wersje, nie dogrywam.")
+            return False
+        if not ib:
+            _push_log("⚠ Nie znam buildu zainstalowanej gry — zakładam zgodność z archiwum.")
+    else:
+        if g["id"] in installed:
+            _push_log(f"✗ Gra jest już zainstalowana: {installed[g['id']]}")
+            return False
+        install_dir = Path(target) if target else GOG_GAMES / (rec.get("install_directory") or g["slug"])
+        if (install_dir.exists() and list(install_dir.glob("goggame-*.info"))
+                and not (install_dir / _DEPOT_STATE_NAME).exists()):
+            _push_log(f"✗ {install_dir} zawiera już inną instalację — wybierz inny katalog.")
+            return False
+        try:
+            if install_dir.resolve().parent != GOG_GAMES.resolve():
+                _push_log(f"⚠ {install_dir} nie leży bezpośrednio w katalogu gier ({GOG_GAMES}) — "
+                          "biblioteka nie pokaże gry jako zainstalowanej.")
+        except OSError:
+            pass
+        if not base:
+            _push_log("✗ Archiwum nie ma depotów gry bazowej dla wybranych języków.")
+            return False
+
+    load = lambda d: arc.get_manifest("depot", d["manifest"])
+    try:
+        groups = []
+        if not dlc_only:
+            groups = _collect_depot_groups(base, load)
+            nd = _resolve_depot_conflicts(groups, base, primary)
+            if nd:
+                _push_log(f"Pliki w wielu depotach językowych: pominięto {nd} wariantów "
+                          f"(zostaje wersja języka głównego: {primary}).")
+        dlc_groups = {}
+        for did, deps_ in per_dlc.items():
+            gr = _collect_depot_groups(deps_, load) if deps_ else []
+            if gr:
+                _resolve_depot_conflicts(gr, deps_, primary)
+            dlc_groups[did] = gr
+        dep_mans = [{"id": d.get("id"), "man": arc.get_manifest("dep", d["manifest"])}
+                    for d in (rec.get("dependencies") or [])] if not dlc_only else []
+    except DA.ArchiveError as exc:
+        _push_log(f"✗ Archiwum: {exc}")
+        return False
+    dep_files, dep_dirs = _dep_items_of(dep_mans)
+
+    all_groups = groups + [x for v in dlc_groups.values() for x in v]
+    chunks = []
+    for grp in all_groups:
+        for f in grp["plain"]:
+            chunks += f.get("chunks") or []
+        if grp["sfced"]:
+            chunks += (grp["sfc"] or {}).get("chunks") or []
+    for f in dep_files:
+        chunks += f.get("chunks") or []
+    missing = arc.missing_chunks(chunks)
+    if missing:
+        _push_log(f"✗ W archiwum brakuje {len(missing)} chunków "
+                  f"({_human(sum(int(c.get('compressedSize') or 0) for c in missing))}) — "
+                  "użyj „Napraw / pobierz brakujące” (wymaga zgody i dostępu do GOG).")
+        return False
+
+    total = sum(_group_total(grp) for grp in all_groups) \
+        + sum(sum(int(c.get("size") or 0) for c in f.get("chunks") or []) for f in dep_files)
+    free = _free_bytes(install_dir)
+    if free is not None and total and free < total:
+        _push_log(f"✗ Za mało miejsca: potrzeba {_human(total)}, wolne {_human(free)}.")
+        return False
+
+    _push_log(f"Instaluję z lokalnego archiwum: build {rid} → {install_dir} "
+              f"(języki: {', '.join(lang_list)}, główny {primary}; DLC: {len(dlc_ids)}).")
+    install_dir.mkdir(parents=True, exist_ok=True)
+    for grp in all_groups:
+        for d in grp["dirs"]:
+            _mk_depot_dir(install_dir, d["path"])
+    for d in dep_dirs:
+        _mk_depot_dir(install_dir, d["path"])
+    done = _read_depot_state(install_dir, rid) if not dlc_only else set()
+    persist = None
+    if not dlc_only:
+        _write_depot_state(install_dir, rid, done)
+        persist = lambda: _write_depot_state(install_dir, rid, done)
+        if done:
+            _push_log(f"Wznawiam — {len(done)} plików już ukończonych.")
+
+    hub = _ProgressHub(total)
+    hub.start(1, f"Z archiwum: {g['title']}", total)
+    counter, clock = {"got": 0}, threading.Lock()
+
+    def bump(n):
+        with clock:
+            counter["got"] += n
+        hub.progress(1, counter["got"])
+
+    fetch = lambda c: arc.read_chunk_plain(c["compressedMd5"], c.get("md5"))
+    conn = get_download_threads()
+    errs = []
+    batches = [(grp, f"__gog_sfc_a{gi}.tmp") for gi, grp in enumerate(all_groups)]
+    for grp, tmp in batches:
+        errs = _download_depot_fileset(grp["plain"], grp["sfced"], grp["sfc"], None,
+                                       install_dir, conn, bump, tmp_name=tmp,
+                                       done=done if not dlc_only else None,
+                                       persist=persist, fetch=fetch)
+        if errs or _cancel.is_set():
+            break
+    if not errs and not _cancel.is_set() and dep_files:
+        _push_log(f"Instaluję zależności z archiwum ({len(dep_files)} plików)…")
+        errs = _download_depot_fileset(dep_files, [], None, None, install_dir, conn,
+                                       bump, tmp_name="__gog_sfc_adep.tmp",
+                                       done=done if not dlc_only else None,
+                                       persist=persist, fetch=fetch)
+    if _cancel.is_set() or errs:
+        hub.finish(1, False)
+        if not dlc_only:
+            _write_depot_state(install_dir, rid, done)
+        if _cancel.is_set():
+            _push_log("⚠ Przerwano — postęp zapisany, instalację można wznowić.")
+            return False
+        for rel, exc in errs[:5]:
+            _push_log(f"✗ {rel}: {exc}")
+        if any(isinstance(e, (DA.CorruptChunk, DA.MissingChunk)) for _, e in errs):
+            _push_log("✗ Archiwum zawiera uszkodzone/brakujące dane — użyj „Napraw archiwum”.")
+        return False
+    hub.finish(1, True)
+
+    _push_log("Weryfikuję zainstalowane pliki…")
+    last = {}                                  # same path in several filesets → last writer wins
+    for f in [f for grp in all_groups for f in grp["plain"] + grp["sfced"]] + dep_files:
+        last[_depot_rel(f.get("path")).lower()] = f
+    probs = _verify_installed(list(last.values()), install_dir)
+    if probs:
+        for rel, why in probs[:5]:
+            _push_log(f"✗ weryfikacja {rel}: {why}")
+            done.discard(rel)
+        if not dlc_only:
+            _write_depot_state(install_dir, rid, done)
+        _push_log("✗ Instalacja nie przeszła weryfikacji — uruchom ponownie, aby dokończyć.")
+        return False
+
+    _apply_support_data(install_dir, pid)
+    if not dlc_only:
+        info = install_dir / f"goggame-{pid}.info"
+        if not info.exists():
+            try:
+                info.write_text(json.dumps({
+                    "gameId": pid, "rootGameId": pid, "name": g["title"],
+                    "buildId": rid, "version": rec.get("version_name") or "", "playTasks": [],
+                }, indent=2), encoding="utf-8")
+            except Exception as exc:
+                log(f"goggame info write: {exc}")
+    names = {str(p.get("id")): p.get("name") for p in rec.get("products") or []}
+    for did in dlc_ids:                        # incl. DLC without own files (metadata only)
+        info = install_dir / f"goggame-{did}.info"
+        if not info.exists():
+            try:
+                info.write_text(json.dumps({
+                    "gameId": did, "rootGameId": pid, "name": names.get(did) or f"DLC {did}",
+                    "buildId": rid, "playTasks": [],
+                }, indent=2), encoding="utf-8")
+            except Exception as exc:
+                log(f"dlc info write {did}: {exc}")
+    if not dlc_only:
+        try:
+            (install_dir / _DEPOT_STATE_NAME).unlink()
+        except Exception:
+            pass
+    _send_js({"type": "completion", "filename": f"{g['title']} — zainstalowano z archiwum", "speed": "OK"})
+    _push_log(f"✓ Zainstalowano z lokalnego archiwum (bez GOG CDN): {install_dir}")
+    return True
+
+
+def _archive_repair_worker(game_id, build_id=None, langs=None, dlcs=None) -> bool:
+    """User-approved download of what the archive lacks for a selection
+    (languages / DLC outside the scope, missing or corrupt chunks) for the SAME
+    build, followed by full verification and commit."""
+    g, pid, arc, recs = _archive_records_for(game_id)
+    rec = _pick_record(recs, build_id)
+    if not g or not rec:
+        _push_log("✗ Brak lokalnego archiwum tej gry.")
+        return False
+    box = _access_token_box()
+    if not box.get("access"):
+        _push_log("✗ Brak logowania GOG — zaloguj się w Ustawieniach.")
+        return False
+    try:
+        meta = arc.get_meta(pid, rec["build_id"])
+    except DA.ArchiveError as exc:
+        _push_log(f"✗ {exc}")
+        return False
+    scope = rec.get("scope") or {}
+    langs = list(scope.get("languages") or []) + [_norm_lang(l) for l in (langs or [])]
+    dl = set(scope.get("dlcs") or []) | {str(d) for d in (dlcs or [])}
+    try:
+        res = arc.verify_chunks(arc.record_chunks(rec), cancel=_cancel.is_set)
+        for m in res["corrupt"]:
+            arc.chunk_path(m).unlink()
+        if res["corrupt"]:
+            _push_log(f"Usunięto {len(res['corrupt'])} uszkodzonych chunków — pobiorę je ponownie.")
+        plan = _plan_archive_scope(meta, pid, langs, dl)
+        new = _archive_build(g, pid, {"build_id": rec["build_id"],
+                                      "version_name": rec.get("version_name")}, meta, plan, box)
+    except Exception as exc:
+        _push_log(f"✗ Naprawa archiwum nieudana: {exc}")
+        return False
+    _push_log(f"✓ Archiwum kompletne: build {new['build_id']}, języki "
+              f"{', '.join(new['scope']['languages'])}, DLC {len(new['scope']['dlcs'])}.")
+    return True
+
+
+def install_from_archive(game_id, build_id=None, langs=None, dlcs=None, target=None) -> dict:
+    langs = langs if isinstance(langs, list) else None
+    dlcs = dlcs if isinstance(dlcs, list) else []
+    return _submit_task(lambda: _archive_install_worker(game_id, build_id, langs, dlcs, target or None),
+                        _task_label("Instalacja z archiwum", game_id), queueable=True)
+
+
+def install_dlc_from_archive(game_id, build_id=None, langs=None, dlcs=None) -> dict:
+    langs = langs if isinstance(langs, list) else None
+    dlcs = dlcs if isinstance(dlcs, list) else []
+    return _submit_task(lambda: _archive_install_worker(game_id, build_id, langs, dlcs, None, True),
+                        _task_label("DLC z archiwum", game_id), queueable=True)
+
+
+def repair_archive(game_id, build_id=None, langs=None, dlcs=None) -> dict:
+    langs = langs if isinstance(langs, list) else None
+    dlcs = dlcs if isinstance(dlcs, list) else []
+    return _submit_task(lambda: _archive_repair_worker(game_id, build_id, langs, dlcs),
+                        _task_label("Naprawa archiwum", game_id), queueable=True)
+
+
+def choose_folder() -> dict:
+    dirs = _folder_dialog()
+    if dirs:
+        return {"ok": True, "path": dirs[0]}
+    return {"ok": False, "error": "Anulowano"}
+
+
+def _archive_status_map() -> dict:
+    """{pid: {...}} — archive state per product for the library view."""
+    arc = _archive()
+    if not arc.exists():
+        return {}
+    out = {}
+    try:
+        for r in arc.list_records():
+            pid = str(r.get("product_id"))
+            cur = out.get(pid)
+            if cur and cur["state"] == DA.STATE_COMPLETE:
+                cur["builds"] += 1
+                continue
+            out[pid] = {"state": r.get("state"), "build_id": r.get("build_id"),
+                        "version": r.get("version_name") or "",
+                        "languages": (r.get("scope") or {}).get("languages") or [],
+                        "dlcs": (r.get("scope") or {}).get("dlcs") or [],
+                        "size": r.get("compressed_size") or 0,
+                        "builds": (cur or {}).get("builds", 0) + 1,
+                        "pending_cleanup": False}
+        for j in arc.pending_cleanups():
+            pid = str(j.get("product_id"))
+            out.setdefault(pid, {"state": DA.STATE_COMPLETE, "build_id": j.get("build_id"),
+                                 "version": "", "languages": [], "dlcs": [], "size": 0,
+                                 "builds": 1})
+            out[pid]["pending_cleanup"] = True
+            out[pid]["cleanup_error"] = j.get("error") or ""
+    except Exception as exc:
+        log(f"archive status: {exc}")
+    return out
+
+
 # ── classic-installer updater (offline installers + extras, no depots) ─────────
 # Refreshes the downloaded offline installers + bonus content of a game to GOG's
 # current build, then hard-deletes the orphaned old files left behind. Legacy
@@ -3368,10 +4822,15 @@ def _update_selection_rows(man: dict, langs: list, include_installers: bool = Tr
     return rows
 
 
-def _cleanup_orphans(dest_dir: Path, extras_dir: Path, expected: dict) -> list:
+def _cleanup_orphans(dest_dir: Path, extras_dir: Path, expected: dict,
+                     sweep_installers: bool = True) -> list:
     """Hard-delete files under the game's own folders that are NOT part of the
     current (expected) set. Scoped strictly to dest_dir / extras_dir, both of
-    which must live under BASE. `expected` maps (dir_str, filename) -> row."""
+    which must live under BASE. `expected` maps (dir_str, filename) -> row.
+
+    `sweep_installers=False` (archive mode: extras-only refresh) never touches
+    installer files — in archive mode only the per-game migration may delete
+    an installer, and only one it verified a replacement for."""
     removed: list = []
     keep_in: dict = {}
     for (dstr, fname) in expected:
@@ -3386,7 +4845,7 @@ def _cleanup_orphans(dest_dir: Path, extras_dir: Path, expected: dict) -> list:
             return False
 
     # Installers / DLC / language packs live in dest_dir with executable-ish exts.
-    if dest_dir.exists() and under_base(dest_dir):
+    if sweep_installers and dest_dir.exists() and under_base(dest_dir):
         keep = keep_in.get(str(dest_dir), set())
         for pat in INSTALLER_EXTS:
             for f in dest_dir.glob(pat):
@@ -3410,7 +4869,9 @@ def _cleanup_orphans(dest_dir: Path, extras_dir: Path, expected: dict) -> list:
     return removed
 
 
-def _update_worker(game_id) -> bool:
+def _update_worker(game_id, extras_only: bool = False) -> bool:
+    """`extras_only=True` (archive mode): refresh bonus content only and never
+    download or delete an installer."""
     g = next((x for x in scan_games() if x["id"] == str(game_id)), None)
     if not g:
         _push_log("✗ Gra nie znaleziona.")
@@ -3421,7 +4882,7 @@ def _update_worker(game_id) -> bool:
     # had its extras downloaded (no installer on disk), update just the extras —
     # never pull a whole installer the user never downloaded.
     dl_info = _check_downloaded_for_game(g, scan_downloaded_games())
-    has_installer = dl_info.get("has_installer", False)
+    has_installer = dl_info.get("has_installer", False) and not extras_only
 
     man = get_download_manifest(game_id)
     if not man.get("ok"):
@@ -3595,7 +5056,8 @@ def _update_worker(game_id) -> bool:
                   "(mógłbym skasować coś aktualnego).")
         return False
 
-    removed = _cleanup_orphans(dest_dir, extras_dir, expected)
+    removed = _cleanup_orphans(dest_dir, extras_dir, expected,
+                               sweep_installers=not extras_only)
     if removed:
         _push_log(f"🗑 Usunięto {len(removed)} osieroconych plików (stare wersje):")
         for p in removed:
@@ -3609,12 +5071,18 @@ def _update_worker(game_id) -> bool:
 
 
 def update_game(game_id) -> dict:
+    if _archive_mode():
+        # Same per-game migration/update unit as "Update all", for one game.
+        return _run_python_task(lambda: _archive_all_worker(only_ids={str(game_id)}), "UPDATE")
     return _run_python_task(lambda: _update_worker(game_id), "UPDATE")
 
 
 def _update_all_worker() -> bool:
     """Update every downloaded game (installers + extras) to GOG's current build,
-    one after another, cleaning orphaned old files as it goes."""
+    one after another, cleaning orphaned old files as it goes. In archive mode:
+    the sequential per-game migration to the local depot archive."""
+    if _archive_mode():
+        return _archive_all_worker()
     downloaded = scan_downloaded_games()
     targets = [g for g in scan_games()
                if _check_downloaded_for_game(g, downloaded)["downloaded"]]
@@ -4428,6 +5896,17 @@ class Api:
     def clear_queue(self):                      return clear_queue()
     def get_settings(self):                     return get_settings()
     def save_settings(self, settings):          return save_settings(settings)
+    # local depot archive
+    def get_archive_info(self, game_id):        return get_archive_info(game_id)
+    def check_archive_install(self, game_id, build_id=None, langs=None, dlcs=None, deep=False):
+        return check_archive_install(game_id, build_id, langs, dlcs, deep)
+    def install_from_archive(self, game_id, build_id=None, langs=None, dlcs=None, target=None):
+        return install_from_archive(game_id, build_id, langs, dlcs, target)
+    def install_dlc_from_archive(self, game_id, build_id=None, langs=None, dlcs=None):
+        return install_dlc_from_archive(game_id, build_id, langs, dlcs)
+    def repair_archive(self, game_id, build_id=None, langs=None, dlcs=None):
+        return repair_archive(game_id, build_id, langs, dlcs)
+    def choose_folder(self):                    return choose_folder()
 
 
 if __name__ == "__main__":

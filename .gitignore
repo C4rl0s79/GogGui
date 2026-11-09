@@ -19,3 +19,6 @@ __pycache__/
 # Śmieci
 *.bak
 Thumbs.db
+
+# Graphify context folder
+graphify-out/

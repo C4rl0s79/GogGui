@@ -372,6 +372,12 @@ main { height: 100%; overflow: hidden; display: flex; flex-direction: column; mi
 .chip-ok   { background: rgba(90,168,90,.15);  color: #8dd98d; border: 1px solid rgba(90,168,90,.25);  }
 .chip-dl   { background: rgba(79,152,163,.15); color: #7cc8d4; border: 1px solid rgba(79,152,163,.25); }
 .chip-none { background: rgba(255,255,255,.04); color: var(--muted); border: 1px solid var(--line); }
+.chip-arc  { background: rgba(140,120,210,.15); color: #b9a8f0; border: 1px solid rgba(140,120,210,.3); }
+.chip-warn { background: rgba(214,160,60,.15); color: #e8c27a; border: 1px solid rgba(214,160,60,.3); }
+.arc-check { margin-top:10px; font-size:12px; line-height:1.5; white-space:pre-line }
+.arc-check.ok  { color:#8dd98d } .arc-check.bad { color:#e8a07a }
+.mig-line { font-size:12px; padding:6px 10px; border-bottom:1px solid var(--line); color: var(--text, #cfd8e0) }
+.mig-report { font-size:12px; padding:8px 10px; border:1px solid var(--line); border-radius:6px; margin:6px 0; white-space:pre-line }
 
 /* ── content wrap ────────────────────────────────────────── */
 .wrap {
@@ -1060,6 +1066,10 @@ main { height: 100%; overflow: hidden; display: flex; flex-direction: column; mi
           <div class="srow"><label data-i18n="set.depotLangs">Domyślne języki instalacji (depot)</label>
             <input type="text" id="s-depot-langs" placeholder="en" style="min-width:120px"></div>
           <div class="wiz-note" style="margin-top:6px" data-i18n="set.depotLangsNote">Domyślne języki przy instalacji z depotów (np. <code>en, pl</code>). Można nadpisać przy każdej instalacji w oknie wyboru.</div>
+          <div class="srow" style="margin-top:14px"><label for="s-archive-mode" data-i18n="set.archiveMode">Pobieraj jako lokalne depoty zamiast instalatorów offline</label>
+            <input type="checkbox" id="s-archive-mode"></div>
+          <div class="wiz-note" style="margin-top:6px" data-i18n="set.archiveModeNote">Przy pobieraniu i aktualizacji zapisuj manifesty oraz skompresowane dane depotów. Istniejące instalatory zastępuj dopiero po zweryfikowaniu kompletnego archiwum danej gry. Extras pozostają bez zmian.</div>
+          <div class="wiz-note" style="margin-top:4px" data-i18n="set.archiveModeNote2">Samo włączenie niczego nie zmienia na dysku. Migracja rusza po „Aktualizuj wszystko” — gra po grze: pobranie → weryfikacja → zatwierdzenie → usunięcie zastąpionych instalatorów tej gry → dopiero następna. Instalatory są usuwane trwale (nie do Kosza), żeby realnie zwolnić miejsce; przez chwilę potrzeba miejsca na archiwum jednej gry. Archiwum: <code>&lt;katalog instalatorów&gt;/_depots</code>.</div>
         </div>
 
         <!-- ACCOUNT -->
@@ -1110,6 +1120,31 @@ main { height: 100%; overflow: hidden; display: flex; flex-direction: column; mi
         <div style="display:flex; gap:8px">
           <button class="btn primary" id="dlGo">⬇ Pobierz zaznaczone</button>
           <button class="btn" onclick="closeDownloadModal()" data-i18n="dl.cancel">✕ Anuluj</button>
+        </div>
+      </div>
+    </div>
+  </div>
+  <!-- install-from-local-archive modal (hidden) -->
+  <div class="settings-overlay" id="archiveModal" style="display:none">
+    <div class="settings-box dl-box">
+      <div class="dl-head">
+        <div>
+          <div class="dl-kicker" id="arcKicker" data-i18n="arc.titleInstall">Instalacja z lokalnego archiwum</div>
+          <h3 id="arcTitle">—</h3>
+        </div>
+        <button class="icon-btn" onclick="closeArchiveModal()" title="Esc">✕</button>
+      </div>
+      <div id="arcBody"><div class="dl-empty" data-i18n="dl.loading">Wczytywanie…</div></div>
+      <div id="arcCheck" class="arc-check"></div>
+      <div class="dl-foot">
+        <div style="display:flex; gap:8px; flex-wrap:wrap">
+          <button class="btn btn-xs" onclick="archiveCheck(false)" data-i18n="arc.check">Sprawdź</button>
+          <button class="btn btn-xs" onclick="archiveCheck(true)" data-i18n="arc.deep">Sprawdź dokładnie (MD5)</button>
+          <button class="btn btn-xs" id="arcRepair" style="display:none" onclick="archiveRepair()" data-i18n="arc.repair">⬇ Pobierz brakujące / napraw</button>
+        </div>
+        <div style="display:flex; gap:8px">
+          <button class="btn primary" id="arcGo" onclick="archiveInstall()" data-i18n="arc.install">📦 Zainstaluj</button>
+          <button class="btn" onclick="closeArchiveModal()" data-i18n="dl.cancel">✕ Anuluj</button>
         </div>
       </div>
     </div>
@@ -1205,6 +1240,7 @@ main { height: 100%; overflow: hidden; display: flex; flex-direction: column; mi
 ════════════════════════════════════════ */
 let games = [], sel = null, cfg = {};
 let isRunning = false, _afterCmd = null;
+let ARCHIVE_MODE = false;   // settings.archive_mode — local depot archive instead of installers
 
 /* ════════════════════════════════════════
    I18N  (PL / EN)
@@ -1257,6 +1293,15 @@ const I18N = {
     'set.connections':'Połączenia (pliki × segmenty)','set.extrasSub':'Extras do podkatalogu',
     'set.updateLangs':'Języki aktualizacji (installery)','set.updateLangsNote':'Kody języków oddzielone przecinkami (np. <code>en, pl</code>). Updater bierze pod uwagę tylko installery Windows w tych językach; stare wersje w extras są pomijane.',
     'set.depotLangs':'Domyślne języki instalacji (depot)','set.depotLangsNote':'Domyślne języki przy instalacji z depotów (np. <code>en, pl</code>). Można nadpisać przy każdej instalacji w oknie wyboru.',
+    'set.archiveMode':'Pobieraj jako lokalne depoty zamiast instalatorów offline',
+    'set.archiveModeNote':'Przy pobieraniu i aktualizacji zapisuj manifesty oraz skompresowane dane depotów. Istniejące instalatory zastępuj dopiero po zweryfikowaniu kompletnego archiwum danej gry. Extras pozostają bez zmian.',
+    'set.archiveModeNote2':'Samo włączenie niczego nie zmienia na dysku. Migracja rusza po „Aktualizuj wszystko” — gra po grze: pobranie → weryfikacja → zatwierdzenie → usunięcie zastąpionych instalatorów tej gry → dopiero następna. Instalatory są usuwane trwale (nie do Kosza), żeby realnie zwolnić miejsce; przez chwilę potrzeba miejsca na archiwum jednej gry. Archiwum: <code>&lt;katalog instalatorów&gt;/_depots</code>.',
+    'status.offline':'⬇ Instalatory offline','status.arcComplete':'🗄 Depot lokalny: kompletny','status.arcIncomplete':'🗄 Depot lokalny: niekompletny','status.arcPending':'🗄 Depot zweryfikowany — czeka na sprzątanie',
+    'btn.arcInstall':'📦 Zainstaluj z lokalnego depo','btn.arcDlc':'📦 DLC z lokalnego depo',
+    'arc.titleInstall':'Instalacja z lokalnego archiwum','arc.titleDlc':'DLC z lokalnego archiwum','arc.build':'Build','arc.langs':'Języki','arc.primary':'Język gry (główny)','arc.dlc':'DLC','arc.noDlc':'Brak DLC w archiwum.','arc.target':'Katalog docelowy','arc.choose':'Wybierz…','arc.check':'Sprawdź','arc.deep':'Sprawdź dokładnie (MD5)','arc.install':'📦 Zainstaluj','arc.addDlc':'📦 Dograj DLC','arc.repair':'⬇ Pobierz brakujące / napraw','arc.notLocal':'nie w archiwum','arc.noFiles':'bez własnych plików','arc.complete':'✓ Wybrany zakres jest kompletny lokalnie — instalacja bez dostępu do GOG.','arc.incomplete':'✗ Wybrany zakres nie jest kompletny lokalnie:','arc.missingChunks':'brakujące chunki: {n} ({size})','arc.corrupt':'uszkodzone chunki: {n}','arc.repairConfirm':'Pobrać brakujące/uszkodzone dane tej wersji z GOG do lokalnego archiwum?\n\n{list}\n\nWymaga zalogowania do GOG. Nic nie zostanie zainstalowane, dopóki nie klikniesz „Zainstaluj”.','arc.pending':'⚠ Archiwum tej gry czeka na dokończenie sprzątania instalatorów (uruchom „Aktualizuj wszystko”).',
+    'mig.stage.start':'start','mig.stage.inventory':'inwentaryzacja plików','mig.stage.plan':'plan archiwizacji','mig.stage.manifests':'manifesty','mig.stage.download':'pobieranie danych','mig.stage.verify':'weryfikacja archiwum','mig.stage.committed':'zatwierdzone','mig.stage.cleanup':'sprzątanie instalatorów','mig.stage.done':'zakończone','mig.stage.result':'wynik','mig.stage.paused':'WSTRZYMANO',
+    'mig.game':'Gra {i} z {n}','mig.report':'Raport archiwizacji','mig.migrated':'Zmigrowane','mig.updated':'Zaktualizowane archiwa','mig.unchanged':'Bez zmian','mig.skipped':'Pominięte','mig.errors':'Błędy','mig.kept':'Zachowane pliki','mig.deleted':'Usunięte instalatory','mig.added':'Nowe dane w archiwum','mig.net':'Bilans wolnego miejsca','mig.paused':'Kolejka WSTRZYMANA',
+    'mig.confirm':'Tryb archiwum depotów: zmigrować pobrane gry ({n}) do lokalnych depotów?\n\nKażda gra osobno, po kolei: pobranie danych depotowych z GOG → pełna weryfikacja → zatwierdzenie → TRWAŁE usunięcie (nie do Kosza) wyłącznie zastąpionych instalatorów tej gry → dopiero wtedy następna gra.\n\nExtras, grafiki, zapisy i zainstalowane gry pozostają nietknięte. Pliki o niejednoznacznym przypisaniu zostają. Przy błędzie pobierania/weryfikacji instalatory zostają; przy błędzie usuwania kolejka się zatrzyma.\n\nChwilowo potrzeba wolnego miejsca na archiwum jednej gry.',
     'set.language':'Język / Language','set.account':'Konto GOG','set.checking':'Sprawdzanie…',
     'set.login':'Zaloguj','set.reLogin':'Zaloguj ponownie','set.loggedIn':'✓ Zalogowano',
     'set.notLoggedIn':'Niezalogowano','set.save':'Zapisz','set.preview':'Podgląd',
@@ -1331,6 +1376,15 @@ const I18N = {
     'set.connections':'Connections (files × segments)','set.extrasSub':'Extras into subfolder',
     'set.updateLangs':'Update languages (installers)','set.updateLangsNote':'Comma-separated language codes (e.g. <code>en, pl</code>). The updater only considers Windows installers in these languages; old versions parked in extras are skipped.',
     'set.depotLangs':'Default install languages (depot)','set.depotLangsNote':'Default languages for depot installs (e.g. <code>en, pl</code>). Can be overridden per install in the picker.',
+    'set.archiveMode':'Download as local depots instead of offline installers',
+    'set.archiveModeNote':'When downloading and updating, store manifests and compressed depot data. Existing installers are replaced only after the complete archive of that game has been verified. Extras stay as they are.',
+    'set.archiveModeNote2':'Enabling this changes nothing on disk. Migration starts with “Update all” — one game at a time: download → verify → commit → delete that game’s replaced installers → only then the next game. Installers are deleted permanently (not to the Recycle Bin) so the space is really freed; temporarily you need room for one game’s archive. Archive: <code>&lt;installers dir&gt;/_depots</code>.',
+    'status.offline':'⬇ Offline installers','status.arcComplete':'🗄 Local depot: complete','status.arcIncomplete':'🗄 Local depot: incomplete','status.arcPending':'🗄 Depot verified — cleanup pending',
+    'btn.arcInstall':'📦 Install from local depot','btn.arcDlc':'📦 DLC from local depot',
+    'arc.titleInstall':'Install from local archive','arc.titleDlc':'DLC from local archive','arc.build':'Build','arc.langs':'Languages','arc.primary':'Game (primary) language','arc.dlc':'DLC','arc.noDlc':'No DLC in the archive.','arc.target':'Target directory','arc.choose':'Choose…','arc.check':'Check','arc.deep':'Deep check (MD5)','arc.install':'📦 Install','arc.addDlc':'📦 Add DLC','arc.repair':'⬇ Download missing / repair','arc.notLocal':'not archived','arc.noFiles':'no own files','arc.complete':'✓ The selected scope is complete locally — installs without GOG access.','arc.incomplete':'✗ The selected scope is not complete locally:','arc.missingChunks':'missing chunks: {n} ({size})','arc.corrupt':'corrupt chunks: {n}','arc.repairConfirm':'Download the missing/corrupt data of this version from GOG into the local archive?\n\n{list}\n\nRequires a GOG login. Nothing is installed until you click “Install”.','arc.pending':'⚠ This game’s archive is waiting for the installer cleanup to finish (run “Update all”).',
+    'mig.stage.start':'start','mig.stage.inventory':'inventory','mig.stage.plan':'archive plan','mig.stage.manifests':'manifests','mig.stage.download':'downloading data','mig.stage.verify':'verifying archive','mig.stage.committed':'committed','mig.stage.cleanup':'deleting installers','mig.stage.done':'done','mig.stage.result':'result','mig.stage.paused':'PAUSED',
+    'mig.game':'Game {i} of {n}','mig.report':'Archive report','mig.migrated':'Migrated','mig.updated':'Archives updated','mig.unchanged':'Unchanged','mig.skipped':'Skipped','mig.errors':'Errors','mig.kept':'Kept files','mig.deleted':'Installers deleted','mig.added':'New archive data','mig.net':'Free-space balance','mig.paused':'Queue PAUSED',
+    'mig.confirm':'Depot archive mode: migrate downloaded games ({n}) to local depots?\n\nEach game separately, in order: download depot data from GOG → full verification → commit → PERMANENT deletion (not to the Recycle Bin) of only that game’s replaced installers → only then the next game.\n\nExtras, artwork, saves and installed games stay untouched. Files with an ambiguous owner are kept. On a download/verification error the installers stay; on a deletion error the queue stops.\n\nYou temporarily need free space for one game’s archive.',
     'set.language':'Język / Language','set.account':'GOG account','set.checking':'Checking…',
     'set.login':'Log in','set.reLogin':'Log in again','set.loggedIn':'✓ Logged in',
     'set.notLoggedIn':'Not logged in','set.save':'Save','set.preview':'Preview',
@@ -1445,8 +1499,63 @@ window.handleActivity = function(msg) {
     setRunning(true, msg.label || t('act.running'));
   } else if (msg.type === 'queue') {
     renderQueue(msg.items || []);
+  } else if (msg.type === 'migration') {
+    renderMigration(msg);
+  } else if (msg.type === 'migration_report') {
+    renderMigrationReport(msg.report || {});
   }
 };
+
+/* Archive migration: "game X of Y · stage" line (per-game sequential queue). */
+let _migPos = {i: 0, n: 0, title: ''};
+function renderMigration(m) {
+  if (m.stage === 'start') _migPos = {i: m.index || 0, n: m.total || 0, title: m.title || ''};
+  const list = document.getElementById('doneList');
+  if (!list) return;
+  ensurePanelOpen();
+  let el = document.getElementById('migLine');
+  if (!el) {
+    el = document.createElement('div');
+    el.id = 'migLine'; el.className = 'mig-line';
+    list.parentNode.insertBefore(el, list);
+  }
+  const pos = _migPos.n ? t('mig.game', {i: _migPos.i, n: _migPos.n}) + ' · ' : '';
+  let extra = '';
+  if (m.stage === 'download' && m.bytes !== undefined) extra = ` · ${m.chunks || 0} chunk(ów), ${formatSize(m.bytes || 0)}`;
+  if (m.stage === 'verify' && m.chunks) extra = ` · ${m.chunks} chunk(ów)`;
+  if (m.stage === 'cleanup' && m.files !== undefined) extra = ` · ${m.files} plik(ów)`;
+  if (m.result) extra += ` · ${m.result}`;
+  if (m.reason || m.error) extra += ` · ${m.reason || m.error}`;
+  el.textContent = `🗄 ${pos}${_migPos.title}${_migPos.title ? ' — ' : ''}${t('mig.stage.' + m.stage)}${extra}`;
+  if (m.stage === 'paused') el.style.color = '#e8a07a';
+}
+
+function renderMigrationReport(r) {
+  const list = document.getElementById('doneList');
+  if (!list) return;
+  ensurePanelOpen();
+  const names = a => (a || []).map(x => x.title + (x.version_change ? ` (${x.version_change})` : '')).join(', ') || '—';
+  const net = (r.deleted_bytes || 0) - (r.added_bytes || 0);
+  const lines = [
+    `${t('mig.report')} (${r.total || 0})`,
+    `${t('mig.migrated')}: ${names(r.migrated)}`,
+    `${t('mig.updated')}: ${names(r.updated)}`,
+    `${t('mig.unchanged')}: ${(r.unchanged || []).length}`,
+    `${t('mig.skipped')}: ` + ((r.skipped || []).map(s => `${s.title} — ${s.reason}`).join('; ') || '—'),
+    `${t('mig.errors')}: ` + ((r.errors || []).map(e => `${e.title} — ${e.error}`).join('; ') || '—'),
+    `${t('mig.deleted')}: ${formatSize(r.deleted_bytes || 0)} · ${t('mig.added')}: ${formatSize(r.added_bytes || 0)} · `
+      + `${t('mig.net')}: ${net >= 0 ? '+' : '−'}${formatSize(Math.abs(net))}`,
+  ];
+  if ((r.kept || []).length)
+    lines.push(`${t('mig.kept')}: ` + r.kept.slice(0, 12).map(k => `${k.name} (${k.reason})`).join('; ')
+               + (r.kept.length > 12 ? ` … +${r.kept.length - 12}` : ''));
+  if (r.paused) lines.push(`⛔ ${t('mig.paused')}: ${r.paused.title} — ${r.paused.error}`);
+  const item = document.createElement('div');
+  item.className = 'mig-report';
+  item.textContent = lines.join('\n');
+  list.insertBefore(item, list.firstChild);
+  if (r.paused) toast('⛔ ' + t('mig.paused') + ': ' + r.paused.title, 'err');
+}
 
 function renderQueue(items) {
   const box = document.getElementById('queueBox');
@@ -1546,6 +1655,8 @@ function clearActivity() {
   if (ts) ts.innerHTML = '';
   const dl = document.getElementById('doneList');
   if (dl) dl.innerHTML = '';
+  const ml = document.getElementById('migLine');
+  if (ml) ml.remove();
   hasProgress = false;
 }
 
@@ -1673,6 +1784,7 @@ async function setArtSource(which, src, persist) {
 
 function applySettings(s) {
   const root = document.documentElement;
+  ARCHIVE_MODE = !!s.archive_mode;
   for (const [k, v] of Object.entries(s))
     if (k.startsWith('--')) root.style.setProperty(k, v);
   if (s.theme) { currentTheme = s.theme; root.setAttribute('data-theme', s.theme); }
@@ -1708,6 +1820,8 @@ function settingsToForm(s) {
   if (ul) ul.value = (Array.isArray(s['update_langs']) ? s['update_langs'] : ['en','pl']).join(', ');
   const dl = document.getElementById('s-depot-langs');
   if (dl) dl.value = (Array.isArray(s['depot_langs']) ? s['depot_langs'] : ['en']).join(', ');
+  const am = document.getElementById('s-archive-mode');
+  if (am) am.checked = !!s['archive_mode'];
   const sk = document.getElementById('s-sgdb-key');
   if (sk) {
     sk.value = '';
@@ -1735,6 +1849,7 @@ function settingsFromForm() {
     'extras_subdir': document.getElementById('s-extras-sub').checked,
     'update_langs': (n('s-update-langs') || 'en, pl').split(',').map(x => x.trim().toLowerCase()).filter(Boolean),
     'depot_langs': (n('s-depot-langs') || 'en').split(',').map(x => x.trim().toLowerCase()).filter(Boolean),
+    'archive_mode': !!document.getElementById('s-archive-mode')?.checked,
     'sgdb_key': (document.getElementById('s-sgdb-key')?.value || '').trim(),
     'art_hero_source': artHeroSource,
     'art_logo_source': artLogoSource,
@@ -1854,6 +1969,7 @@ async function saveSettingsFromForm() {
   applySettings(s);
   await call('save_settings', s);
   toast(t('set.saved'), 'ok');
+  if (sel) renderMain();          // archive-mode buttons / texts depend on the setting
   // A new SGDB key means cached hero art is stale — clear and reload current game.
   if (keyChanged) {
     Object.keys(_heroArtCache).forEach(k => delete _heroArtCache[k]);
@@ -2338,12 +2454,25 @@ function gameStatusChips(g) {
   if (g.installed)
     chips.push(`<span class="chip chip-ok">${t('status.installed')}</span>`);
   if (g.downloaded) {
+    // Offline installers, local depot archive and the installed game are three
+    // separate things — shown as separate chips.
     const sz = g.installer_size ? ` · ${formatSize(g.installer_size)}` : '';
-    chips.push(`<span class="chip chip-dl">${t('status.downloaded')}${sz}</span>`);
+    if (g.has_installer)
+      chips.push(`<span class="chip chip-dl">${t('status.offline')}${sz}</span>`);
     if (g.extras_size)
       chips.push(`<span class="chip chip-dl">🎁 ${(g.extras_files||[]).length} · ${formatSize(g.extras_size)}</span>`);
   }
-  if (!g.installed && !g.downloaded)
+  if (g.archive) {
+    const a = g.archive;
+    const label = a.pending_cleanup ? t('status.arcPending')
+                : a.state === 'complete' ? t('status.arcComplete') : t('status.arcIncomplete');
+    const cls = (a.pending_cleanup || a.state !== 'complete') ? 'chip-warn' : 'chip-arc';
+    const tip = `build ${a.build_id || '?'}${a.version ? ' · v' + a.version : ''} · ${(a.languages || []).join(', ')}`
+              + ((a.dlcs || []).length ? ` · DLC ${(a.dlcs || []).length}` : '')
+              + (a.cleanup_error ? ` · ${a.cleanup_error}` : '');
+    chips.push(`<span class="chip ${cls}" title="${esc(tip)}">${label}${a.size ? ' · ' + formatSize(a.size) : ''}</span>`);
+  }
+  if (!g.installed && !g.downloaded && !g.archived)
     chips.push(`<span class="chip chip-none">${t('status.notDownloaded')}</span>`);
   return chips.join('');
 }
@@ -2379,7 +2508,13 @@ function gameActionButtons(g) {
     btns.push(`<button class="btn" id="depotInstallBtn">${t('btn.depotInstall')}</button>`);
   }
 
-  if (g.downloaded)
+  // Local depot archive: install / add DLC with no GOG access (queueable).
+  if (g.archived && !g.installed)
+    btns.push(`<button class="btn" id="archiveInstallBtn">${t('btn.arcInstall')}</button>`);
+  if (g.archived && g.installed && (g.archive.dlcs || []).length)
+    btns.push(`<button class="btn" id="archiveDlcBtn">${t('btn.arcDlc')}</button>`);
+
+  if (g.downloaded || (ARCHIVE_MODE && g.archived))
     btns.push(`<button class="btn"${dis} id="updateBtn">${t('btn.update')}</button>`);
   btns.push(`<button class="btn"${dis} id="syncBtn">${t('btn.syncGame')}</button>`);
   return `<div class="hero-buttons">${btns.join('')}</div>`;
@@ -2582,8 +2717,18 @@ function renderMain() {
     if (depBtn) depBtn.onclick = () => openDownloadModal(g, 'install');
   }
 
+  const arcBtn = document.getElementById('archiveInstallBtn');
+  if (arcBtn) arcBtn.onclick = () => openArchiveModal(g, 'install');
+  const arcDlcBtn = document.getElementById('archiveDlcBtn');
+  if (arcDlcBtn) arcDlcBtn.onclick = () => openArchiveModal(g, 'dlc');
+
   const updateBtn = document.getElementById('updateBtn');
   if (updateBtn) updateBtn.onclick = () => {
+    if (ARCHIVE_MODE) {
+      if (!confirm(t('mig.confirm', {n: 1}) + `\n\n"${g.title}"`)) return;
+      runCmd(() => call('update_game', String(g.id)), refreshAll, `archiwum: ${g.title}…`);
+      return;
+    }
     if (!confirm(
       `Zaktualizować installery + extras gry:\n"${g.title}"\n\n`
       + `Pobrane zostaną nowsze wersje, a stare (osierocone) pliki zostaną `
@@ -2606,8 +2751,13 @@ document.getElementById('tbSync').onclick = () =>
   runCmd(() => call('sync_json_all'), refreshAll, t('tb.sync') + '…');
 
 document.getElementById('tbUpdateAll').onclick = () => {
-  const n = games.filter(g => g.downloaded).length;
+  const n = games.filter(g => g.downloaded || (ARCHIVE_MODE && g.archived)).length;
   if (!n) { toast(LANG === 'pl' ? 'Brak pobranych gier.' : 'No downloaded games.', 'err'); return; }
+  if (ARCHIVE_MODE) {
+    if (!confirm(t('mig.confirm', {n}))) return;
+    runCmd(() => call('update_all_games'), refreshAll, t('tb.updateAll') + '…');
+    return;
+  }
   if (!confirm(
     (LANG === 'pl'
       ? `Zaktualizować WSZYSTKIE pobrane gry (${n})?\n\n`
@@ -2880,6 +3030,150 @@ function submitDownload() {
   // Queueable: if something is already running, this is added to the queue
   // instead of being rejected.
   submitQueueable(fn, pfx + g.title);
+}
+
+/* ════════════════════════════════════════
+   INSTALL FROM LOCAL DEPOT ARCHIVE
+   Choose build, languages (+ primary), DLC and target directory. A complete
+   local scope installs with no GOG access; gaps are listed and downloading
+   them is a separate, explicit action — never a silent CDN fallback.
+════════════════════════════════════════ */
+let _arcGame = null, _arcInfo = null, _arcMode = 'install', _arcLastCheck = null, _arcPrefs = ['en'];
+
+async function openArchiveModal(g, mode = 'install') {
+  _arcGame = g; _arcMode = mode; _arcInfo = null; _arcLastCheck = null;
+  document.getElementById('arcKicker').textContent = t(mode === 'dlc' ? 'arc.titleDlc' : 'arc.titleInstall');
+  document.getElementById('arcTitle').textContent = g.title;
+  document.getElementById('arcGo').textContent = t(mode === 'dlc' ? 'arc.addDlc' : 'arc.install');
+  document.getElementById('arcBody').innerHTML = `<div class="dl-empty">${t('dl.loading')}</div>`;
+  document.getElementById('arcCheck').textContent = '';
+  document.getElementById('arcRepair').style.display = 'none';
+  document.getElementById('archiveModal').style.display = 'flex';
+  try { _arcPrefs = (await call('get_settings')).depot_langs || ['en']; } catch (e) { _arcPrefs = ['en']; }
+  const info = await call('get_archive_info', String(g.id));
+  if (!info || !info.ok || !(info.builds || []).length) {
+    document.getElementById('arcBody').innerHTML =
+      '<div class="dl-empty">✗ ' + esc((info && info.error) || 'Brak archiwum') + '</div>';
+    return;
+  }
+  _arcInfo = info;
+  _renderArchiveBody();
+}
+
+function _arcBuild() {
+  const v = document.getElementById('arcBuildSel')?.value;
+  const bs = _arcInfo.builds;
+  return bs.find(b => b.build_id === v) || bs.find(b => b.state === 'complete') || bs[0];
+}
+
+function _renderArchiveBody(keepBuild) {
+  const info = _arcInfo, b = keepBuild || _arcBuild();
+  const prefs = (_arcPrefs || ['en']).map(x => String(x).toLowerCase());
+  const local = new Set(b.languages || []);
+  const all = [...new Set([...(b.languages || []), ...(b.build_languages || [])])];
+  const def = new Set(prefs.filter(l => local.has(l)));
+  if (!def.size && b.languages.length) def.add(b.languages[0]);
+  const primary = prefs.find(l => local.has(l)) || [...def][0] || all[0];
+  let h = '';
+  if (info.pending_cleanup) h += `<div class="dl-empty" style="color:#e8c27a">${t('arc.pending')}</div>`;
+  h += `<div class="dl-group"><div class="dl-group-head"><span class="dl-group-title">${t('arc.build')}</span></div>
+        <select id="arcBuildSel" onchange="_renderArchiveBody()">` +
+       info.builds.map(x => `<option value="${esc(x.build_id)}" ${x.build_id === b.build_id ? 'selected' : ''}>`
+         + `${esc(x.build_id)}${x.version ? ' · v' + esc(x.version) : ''} · ${esc(x.state)} · ${formatSize(x.compressed_size || 0)}</option>`).join('') +
+       `</select></div>`;
+  h += `<div class="dl-group"><div class="dl-group-head"><span class="dl-group-title">${t('arc.langs')}</span></div><div class="dl-langs">` +
+       all.map(c => `<label class="dl-lang"><input type="checkbox" class="arc-lang-cb" value="${esc(c)}" ${def.has(c) ? 'checked' : ''}> `
+         + `${esc(_langName(c))}${local.has(c) ? '' : ` <span class="dl-badge">${t('arc.notLocal')}</span>`}</label>`).join('') +
+       `</div><div class="dl-langs" style="margin-top:8px"><label class="dl-lang">${t('arc.primary')}
+        <select id="arcPrimary">` + all.map(c => `<option value="${esc(c)}" ${c === primary ? 'selected' : ''}>${esc(_langName(c))}</option>`).join('') +
+       `</select></label></div></div>`;
+  const inst = new Set(info.installed_dlc || []);
+  const dlcs = (b.dlcs || []).filter(d => _arcMode !== 'dlc' || !inst.has(String(d.id)));
+  h += `<div class="dl-group"><div class="dl-group-head"><span class="dl-group-title">${t('arc.dlc')} · ${dlcs.length}</span></div>` +
+       (dlcs.length ? dlcs.map(d => `<div class="dl-row"><input type="checkbox" class="arc-dlc-cb" value="${esc(String(d.id))}" ${_arcMode === 'dlc' ? 'checked' : ''}>`
+         + `<div class="dl-main"><div class="dl-name">${esc(d.name || ('DLC ' + d.id))}`
+         + `${d.has_files ? '' : ` <span class="dl-badge">${t('arc.noFiles')}</span>`}</div></div></div>`).join('')
+        : `<div class="dl-empty">${t('arc.noDlc')}</div>`) + `</div>`;
+  if (_arcMode !== 'dlc') {
+    const sep = info.games_dir.includes('\\') ? '\\' : '/';
+    const defDir = info.games_dir.replace(/[\\/]+$/, '') + sep + (b.install_directory || '');
+    h += `<div class="dl-group"><div class="dl-group-head"><span class="dl-group-title">${t('arc.target')}</span></div>
+          <div style="display:flex;gap:6px"><input type="text" id="arcTarget" style="flex:1" value="${esc(defDir)}">
+          <button class="btn btn-xs" onclick="archiveChooseDir()">${t('arc.choose')}</button></div></div>`;
+  }
+  document.getElementById('arcBody').innerHTML = h;
+  document.getElementById('arcCheck').textContent = '';
+  document.getElementById('arcRepair').style.display = 'none';
+}
+
+function _arcSel() {
+  const langs = Array.from(document.querySelectorAll('.arc-lang-cb:checked')).map(c => c.value);
+  const prim = document.getElementById('arcPrimary')?.value;
+  const ordered = prim ? [prim, ...langs.filter(l => l !== prim)] : langs;
+  return {
+    build: _arcBuild().build_id,
+    langs: ordered,
+    dlcs: Array.from(document.querySelectorAll('.arc-dlc-cb:checked')).map(c => c.value),
+    target: (document.getElementById('arcTarget')?.value || '').trim(),
+  };
+}
+
+async function archiveChooseDir() {
+  const r = await call('choose_folder');
+  if (!r || !r.ok) return;
+  const b = _arcBuild(), sep = r.path.includes('\\') ? '\\' : '/';
+  document.getElementById('arcTarget').value = r.path.replace(/[\\/]+$/, '') + sep + (b.install_directory || '');
+}
+
+async function archiveCheck(deep) {
+  if (!_arcGame || !_arcInfo) return null;
+  const s = _arcSel();
+  const box = document.getElementById('arcCheck');
+  box.className = 'arc-check'; box.textContent = t('dl.loading');
+  const r = await call('check_archive_install', String(_arcGame.id), s.build, s.langs, s.dlcs, !!deep);
+  _arcLastCheck = r;
+  const rep = document.getElementById('arcRepair');
+  if (!r || !r.ok) { box.className = 'arc-check bad'; box.textContent = '✗ ' + ((r && r.error) || ''); return r; }
+  if (r.complete) {
+    box.className = 'arc-check ok'; box.textContent = t('arc.complete'); rep.style.display = 'none';
+  } else {
+    const items = [...(r.gaps || [])];
+    if (r.missing_chunks) items.push(t('arc.missingChunks', {n: r.missing_chunks, size: formatSize(r.missing_bytes || 0)}));
+    if (r.corrupt_chunks) items.push(t('arc.corrupt', {n: r.corrupt_chunks}));
+    if (r.state && r.state !== 'complete') items.push('stan archiwum: ' + r.state);
+    box.className = 'arc-check bad';
+    box.textContent = t('arc.incomplete') + '\n• ' + items.join('\n• ');
+    rep.style.display = '';
+  }
+  return r;
+}
+
+async function archiveInstall() {
+  const r = await archiveCheck(false);
+  if (!r || !r.ok || !r.complete) return;          // gaps shown — no silent download
+  const s = _arcSel(), g = _arcGame;
+  if (!s.langs.length) { toast('✗ ' + t('arc.langs'), 'err'); return; }
+  closeArchiveModal();
+  const fn = _arcMode === 'dlc'
+    ? () => call('install_dlc_from_archive', String(g.id), s.build, s.langs, s.dlcs)
+    : () => call('install_from_archive', String(g.id), s.build, s.langs, s.dlcs, s.target);
+  submitQueueable(fn, (LANG === 'pl' ? 'Z archiwum: ' : 'From archive: ') + g.title);
+}
+
+async function archiveRepair() {
+  const s = _arcSel(), g = _arcGame, r = _arcLastCheck || {};
+  const items = [...(r.gaps || [])];
+  if (r.missing_chunks) items.push(t('arc.missingChunks', {n: r.missing_chunks, size: formatSize(r.missing_bytes || 0)}));
+  if (r.corrupt_chunks) items.push(t('arc.corrupt', {n: r.corrupt_chunks}));
+  if (!confirm(t('arc.repairConfirm', {list: '• ' + items.join('\n• ')}))) return;
+  closeArchiveModal();
+  submitQueueable(() => call('repair_archive', String(g.id), s.build, s.langs, s.dlcs),
+                  (LANG === 'pl' ? 'Naprawa archiwum: ' : 'Archive repair: ') + g.title);
+}
+
+function closeArchiveModal() {
+  document.getElementById('archiveModal').style.display = 'none';
+  _arcGame = null; _arcInfo = null; _arcLastCheck = null;
 }
 
 async function submitQueueable(cmdFn, label) {
