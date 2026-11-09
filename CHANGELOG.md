@@ -6,6 +6,8 @@ wersjonowanie wg [SemVer](https://semver.org/lang/pl/).
 
 ## [Unreleased]
 
+## [1.5.0] - 2026-11-09
+
 ### Dodano
 - **Archiwum depotów obejmuje całą grę:** wszystkie języki buildu i wszystkie posiadane DLC, które build
   zawiera — także gdy instalator offline miał tylko jeden język. Instalacja (EmuStart / Lumen) wybiera języki i
