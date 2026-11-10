@@ -24,7 +24,7 @@ def _base_dirs():
     return app, res
 
 
-APP_VERSION = "1.5.1"      # see CHANGELOG.md
+APP_VERSION = "1.6.0"      # see CHANGELOG.md
 
 IS_WIN = os.name == "nt"
 # The user's platform as GOG's API names it — decides which offline installers
@@ -2448,6 +2448,9 @@ def _file_state() -> "FS.FileState":
     return FS.FileState(BASE / "_state" / "file_state.json", BASE)
 
 
+_HEX32_RE = re.compile(r"^[0-9a-f]{32}$")
+
+
 def _head_signature(cdn_url: str) -> dict | None:
     """What the CDN says about a file without downloading it (HEAD): ETag,
     Last-Modified, length, file name. None when the server gives no usable answer."""
@@ -2710,16 +2713,24 @@ def _authed_json(url: str, box: dict) -> dict:
 def _get_secure_link(product_id: str, box: dict) -> str:
     """Resolve the CDN secure link template for chunk downloads."""
     js = _authed_json(GOG_SECURE_LINK.format(id=product_id), box)
+    return _expand_link(_secure_endpoint(js))
+
+
+def _secure_endpoint(js: dict) -> dict:
+    """The CDN endpoint of a secure_link answer: fastly first, else the first usable one."""
     urls = js.get("urls") or []
     if not urls:
         raise RuntimeError("secure_link: pusta lista CDN")
-    # Prefer a fastly endpoint, otherwise take the first usable one.
-    urls.sort(key=lambda u: 0 if "fastly" in (u.get("endpoint_name") or "") else 1)
+    urls = sorted(urls, key=lambda u: 0 if "fastly" in (u.get("endpoint_name") or "") else 1)
     ep = next((u for u in urls if u.get("url_format") and u.get("parameters")), None)
     if not ep:
         raise RuntimeError("secure_link: brak użytecznego endpointu")
+    return ep
+
+
+def _expand_link(ep: dict, params: dict | None = None) -> str:
     link = ep["url_format"]
-    for k, v in ep["parameters"].items():
+    for k, v in (params if params is not None else ep["parameters"]).items():
         link = link.replace("{" + k + "}", str(v))
     return link
 
@@ -2768,6 +2779,15 @@ def _pick_build(product_id: str) -> dict:
         raise RuntimeError("Brak buildów Galaxy dla Linuksa — użyj instalatora "
                            "offline (.sh) zamiast instalacji z depotów")
     raise RuntimeError("Brak buildów Galaxy (generation=2) dla Windows")
+
+
+def _pick_v2_build(product_id: str) -> dict:
+    """Build for the ONLINE depot install, which speaks content-system v2 only."""
+    build = _pick_build(product_id)
+    if _is_v1(build):
+        raise RuntimeError("gra ma tylko stary build Galaxy (v1) — zainstaluj ją z instalatora "
+                           "offline albo z archiwum depotów")
+    return build
 
 
 def _dependency_secure_link() -> str:
@@ -2996,8 +3016,7 @@ def get_build_languages(game_id) -> dict:
         return {"ok": False, "error": "Gra nie znaleziona"}
     pid = str(g["product"].get("id") or "").strip()
     try:
-        build = _pick_build(pid)
-        meta  = _cs_get_zlib(build["link"])
+        build, meta = _fetch_build_and_meta(pid)
     except Exception as exc:
         return {"ok": False, "error": str(exc), "has_build": False}
     langs = set()
@@ -3373,7 +3392,7 @@ def _depot_install_worker(game_id, extra_keys: list, langs: list | None = None) 
     # 1. Build meta ------------------------------------------------------------
     _push_log("Pobieram listę buildów Galaxy…")
     try:
-        build = _pick_build(pid)
+        build = _pick_v2_build(pid)
         meta  = _cs_get_zlib(build["link"])
     except Exception as exc:
         _push_log(f"✗ Nie udało się pobrać manifestu builda: {exc}")
@@ -3620,7 +3639,7 @@ def _install_dlc_worker(game_id, dlc_keys: list, langs: list | None = None) -> b
 
     _push_log("Pobieram build Galaxy dla DLC…")
     try:
-        build = _pick_build(pid)
+        build = _pick_v2_build(pid)
         meta  = _cs_get_zlib(build["link"])
     except Exception as exc:
         _push_log(f"✗ Nie udało się pobrać manifestu builda: {exc}")
@@ -3807,6 +3826,316 @@ def _free_bytes(path: Path) -> int | None:
         return None
 
 
+# ── Galaxy content-system v1 (old builds: every file of a product inside ONE main.bin) ──
+# Many classic games still have only a generation-1 build. The archive keeps ONE format — v2 chunks + v2
+# manifests — so a v1 build is converted while it is archived: every file is read from main.bin by HTTP Range,
+# checked against its v1 MD5, cut into 1 MiB zlib chunks and described by a v2-shaped manifest. The depot
+# install, Lumen and the EmuStart server then read it like any other build.
+
+V1_CHUNK = 1024 * 1024              # plain bytes per chunk (as in v2)
+V1_SPAN = 16 * 1024 * 1024          # small files fetched together: one Range request covers at most this much
+V1_GAP = 256 * 1024                 # bytes between two files that may be downloaded and dropped
+_V1_LANGS = {
+    "english": "en", "polish": "pl", "german": "de", "french": "fr", "spanish": "es", "italian": "it",
+    "russian": "ru", "portuguese": "pt", "brazilian-portuguese": "pt-BR", "brazilian portuguese": "pt-BR",
+    "czech": "cs", "hungarian": "hu", "turkish": "tr", "chinese": "zh", "japanese": "ja", "korean": "ko",
+    "dutch": "nl", "swedish": "sv", "norwegian": "no", "danish": "da", "finnish": "fi", "greek": "el",
+    "ukrainian": "uk", "arabic": "ar", "romanian": "ro", "bulgarian": "bg", "slovak": "sk", "serbian": "sr",
+    "thai": "th", "latin american spanish": "es-MX", "spanish (latin american)": "es-MX",
+    "portuguese (brazil)": "pt-BR", "simplified chinese": "zh-Hans", "chinese simplified": "zh-Hans",
+    "traditional chinese": "zh-Hant", "chinese traditional": "zh-Hant", "hebrew": "he", "icelandic": "is",
+    "estonian": "et", "latvian": "lv", "lithuanian": "lt", "slovenian": "sl", "croatian": "hr",
+    "vietnamese": "vi", "indonesian": "id", "persian": "fa", "catalan": "ca",
+}
+
+
+def _is_v1(build: dict) -> bool:
+    return str(build.get("generation") or "2") == "1"
+
+
+def _v1_lang(name: str) -> str:
+    n = str(name or "").strip()
+    if not n or n.lower() == "neutral" or n == "*":
+        return "*"
+    code = _V1_LANGS.get(n.lower())
+    if code is None:
+        log(f"v1: nieznana nazwa języka {n!r} — zapisuję jako {n.lower()!r}")
+    return code or n.lower()
+
+
+def _v1_name(name) -> str:
+    if isinstance(name, dict):
+        return str(name.get("en") or next(iter(name.values()), "") or "")
+    return str(name or "")
+
+
+def _v1_manifest_id(gid: str, ts: str, name: str) -> str:
+    """Stable 32-hex id of a converted v1 depot manifest (the archive and the server want v2-style ids)."""
+    return hashlib.md5(f"gog-cs-v1:{gid}:{ts}:{name}".encode()).hexdigest()
+
+
+def _v1_meta(pid: str, build: dict) -> dict:
+    """repository.json of a v1 build → build meta in the v2 shape the archive uses (depots with productId,
+    short language codes, 32-hex manifest ids); each depot keeps where its v1 manifest lives."""
+    repo = _cs_get_zlib(build["link"])
+    p = repo.get("product") or {}
+    ts = str(p.get("timestamp") or build.get("legacy_build_id") or "")
+    if not ts.isdigit():
+        raise RuntimeError("build v1 bez znacznika czasu (timestamp)")
+    base_url = build["link"].rsplit("/", 1)[0]
+    depots, redist = [], {}
+    for d in p.get("depots") or []:
+        if d.get("redist"):                           # same ids as the v2 dependency repository
+            redist[str(d["redist"])] = str(d.get("targetDir") or "")
+            continue
+        gids = [str(x) for x in d.get("gameIDs") or []]
+        systems = {str(s).lower() for s in d.get("systems") or []}
+        if not d.get("manifest") or not gids or (systems and _MY_OS not in systems):
+            continue                                  # redist entries / other OS
+        owner = str(pid) if str(pid) in gids else gids[0]
+        depots.append({"productId": owner,
+                       "languages": sorted({_v1_lang(l) for l in d.get("languages") or []}) or ["*"],
+                       "manifest": _v1_manifest_id(owner, ts, d["manifest"]),
+                       "size": int(d.get("size") or 0),
+                       "v1": {"timestamp": ts, "manifest": str(d["manifest"]), "base": base_url}})
+    return {"buildId": str(build.get("build_id") or ""), "contentSystem": 1, "timestamp": ts,
+            "installDirectory": p.get("installDirectory") or "",
+            "baseProductId": str(p.get("rootGameID") or pid),
+            "products": [{"productId": str(x.get("gameID")), "name": _v1_name(x.get("name"))}
+                         for x in p.get("gameIDs") or [] if x.get("gameID")],
+            "depots": depots, "dependencies": sorted(redist),
+            "v1RedistTargets": {k: v for k, v in redist.items() if v.strip("/\\")}}
+
+
+class _V1Blob:
+    """Signed CDN address of one product's main.bin; re-signed when the link expires (401/403)."""
+
+    def __init__(self, gid: str, ts: str, box: dict):
+        self.gid, self.ts, self.box = gid, ts, box
+        self.lock = threading.Lock()
+        self.url = None
+        self.variant = None                           # which of the candidate paths the CDN serves
+
+    def _candidates(self) -> list:
+        js = _authed_json(f"{GOG_CONTENT_SYSTEM}/products/{self.gid}/secure_link"
+                          f"?_version=2&type=depot&path=/{_MY_OS}/{self.ts}/", self.box)
+        ep = _secure_endpoint(js)
+        out = []
+        for tail in ("main.bin", f"{self.gid}/main.bin"):
+            params = dict(ep["parameters"])
+            params["path"] = str(params.get("path") or "").rstrip("/") + "/" + tail
+            out.append(_expand_link(ep, params))
+        return out
+
+    def get(self, renew: bool = False) -> str:
+        with self.lock:
+            if self.url is None or renew:
+                cands = self._candidates()
+                if self.variant is None:
+                    for i, u in enumerate(cands):
+                        try:
+                            with _v1_open(u, 0, 1):
+                                pass
+                            self.variant = i
+                            break
+                        except urllib.error.HTTPError as exc:
+                            if exc.code not in (403, 404):        # signed CDNs answer 403 for a missing object
+                                raise
+                    if self.variant is None:
+                        raise RuntimeError(f"main.bin produktu {self.gid} nie istnieje na CDN")
+                self.url = cands[self.variant]
+            return self.url
+
+
+def _v1_open(url: str, start: int, length: int):
+    """Response streaming bytes [start, start+length) of main.bin (must be a real 206 range)."""
+    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0",
+                                               "Range": f"bytes={start}-{start + length - 1}"})
+    resp = urllib.request.urlopen(req, timeout=60)
+    cr = resp.headers.get("Content-Range") or ""
+    if resp.status != 206 or not cr.startswith(f"bytes {start}-"):
+        resp.close()
+        raise RuntimeError(f"CDN nie obsłużył zakresu bajtów main.bin (HTTP {resp.status})")
+    return resp
+
+
+def _v1_units(files: list) -> list:
+    """Unique (offset, size) blobs sorted by offset, grouped into Range requests: neighbours closer than
+    V1_GAP share a request while it spans at most V1_SPAN; a large file is one request of its own."""
+    keys = sorted({(int(f["offset"]), int(f["size"])) for f in files if int(f["size"]) > 0})
+    units, cur = [], []
+    for off, size in keys:
+        if cur:
+            end = cur[-1][0] + cur[-1][1]
+            if off >= end and off - end <= V1_GAP and off + size - cur[0][0] <= V1_SPAN:
+                cur.append((off, size))
+                continue
+            units.append(cur)
+        cur = [(off, size)]
+    if cur:
+        units.append(cur)
+    return units
+
+
+def _v1_store(arc, cm: str, comp: bytes, fresh: set, flock, stats: dict) -> None:
+    """Write one converted chunk unless present. Two files of main.bin can hold the same 1 MiB block and
+    land in two worker threads at once: one writer per chunk name (shared temp-file name otherwise)."""
+    with flock:
+        lk = stats.setdefault("_locks", {}).setdefault(cm, threading.Lock())
+    with lk:
+        if arc.has_chunk(cm, len(comp)):
+            return                                  # an existing copy is not trusted: the verify pass reads it
+        arc.put_chunk(cm, comp, verified=True)
+        with flock:
+            fresh.add(cm)
+            stats["added"] += len(comp)
+
+
+def _v1_read_unit(arc, blob: "_V1Blob", unit: list, fresh: set, flock, bump, stats: dict) -> dict:
+    """Download one Range request, cut each file into chunks, store them; {(offset, size): (md5, chunks)}."""
+    start, end = unit[0][0], unit[-1][0] + unit[-1][1]
+    last = None
+    for attempt in range(3):
+        if _cancel.is_set():
+            raise RuntimeError("anulowano")
+        out, shown = {}, 0
+        try:
+            with _v1_open(blob.get(renew=attempt > 0 and isinstance(last, urllib.error.HTTPError)),
+                          start, end - start) as resp:
+                pos = start
+                for off, size in unit:
+                    while pos < off:                           # gap between two files: read and drop
+                        skip = resp.read(min(off - pos, V1_CHUNK))
+                        if not skip:
+                            raise RuntimeError("main.bin: przerwany strumień")
+                        pos += len(skip)
+                    whole, chunks, left = hashlib.md5(), [], size
+                    while left:
+                        piece = resp.read(min(left, V1_CHUNK))
+                        while piece and len(piece) < min(left, V1_CHUNK):   # short reads from the socket
+                            more = resp.read(min(left, V1_CHUNK) - len(piece))
+                            if not more:
+                                break
+                            piece += more
+                        if not piece:
+                            raise RuntimeError("main.bin: przerwany strumień")
+                        whole.update(piece)
+                        comp = zlib.compress(piece, 6)
+                        cm = hashlib.md5(comp).hexdigest()
+                        _v1_store(arc, cm, comp, fresh, flock, stats)
+                        chunks.append({"compressedMd5": cm, "compressedSize": len(comp),
+                                       "md5": hashlib.md5(piece).hexdigest(), "size": len(piece)})
+                        left -= len(piece)
+                        pos += len(piece)
+                        shown += len(piece)
+                        bump(len(piece))
+                    out[(off, size)] = (whole.hexdigest(), chunks)
+            return out
+        except Exception as exc:
+            last = exc
+            bump(-shown)
+            if isinstance(exc, urllib.error.HTTPError) and exc.code not in (401, 403, 429) and exc.code < 500:
+                raise
+            time.sleep(1 + attempt)
+    raise last
+
+
+def _v1_plan_depot(arc, d: dict) -> dict:
+    """v1 manifest of one depot → v2 items. A file whose chunks are all present in an earlier conversion of
+    this depot (same manifest id) is reused as is; only the others go to `todo` (repair downloads only them)."""
+    v1 = d["v1"]
+    man = _cs_get_zlib(f"{v1['base']}/{v1['manifest']}")
+    prev = {}
+    if arc.has_manifest("depot", d["manifest"]):
+        for it in (arc.get_manifest("depot", d["manifest"]).get("depot") or {}).get("items") or []:
+            if it.get("type") == "DepotFile" and it.get("chunks") and not arc.missing_chunks(it["chunks"]):
+                prev[it.get("path")] = it
+    items, todo = [], {}
+    for f in (man.get("depot") or {}).get("files") or []:
+        path = str(f.get("path") or "").replace("\\", "/").lstrip("/")
+        url = str(f.get("url") or "")
+        gid = url.split("/", 1)[0] if "/" in url else str(d["productId"])
+        if f.get("support") and path.startswith(gid + "/"):
+            path = path[len(gid) + 1:]                # support files: no product folder (as in v2)
+        if f.get("directory"):
+            if path:
+                items.append({"type": "DepotDirectory", "path": path.replace("/", "\\")})
+            continue
+        size = int(f.get("size") or 0)
+        if not path or (size and "offset" not in f):
+            raise RuntimeError(f"v1: wpis manifestu bez ścieżki albo offsetu: {f!r:.200}")
+        it = {"type": "DepotFile", "path": path.replace("/", "\\"),
+              "md5": str(f.get("hash") or "").lower(), "chunks": []}
+        if f.get("support"):
+            it["flags"] = ["support"]
+        old = prev.get(it["path"])
+        if old is not None and (not it["md5"] or old.get("md5") == it["md5"]):
+            it["chunks"] = old["chunks"]
+        elif size:
+            it["_v1"] = (gid, int(f["offset"]), size)
+            todo.setdefault(gid, []).append({"offset": int(f["offset"]), "size": size})
+        elif it["md5"] and it["md5"] != hashlib.md5(b"").hexdigest():
+            raise RuntimeError(f"v1: pusty plik {it['path']} z niepustym MD5")
+        items.append(it)                              # empty files: no offset, no url, no chunks
+    return {"d": d, "items": items, "todo": todo,
+            "bytes": sum(x["size"] for fl in todo.values() for x in fl)}
+
+
+def _v1_download_depot(arc, pl: dict, box: dict, fresh: set, blobs: dict, bump, stats: dict) -> dict:
+    """Download what `_v1_plan_depot` left to do (main.bin ranges → chunks); returns the v2 manifest."""
+    flock = stats.setdefault("_lock", threading.Lock())
+    results, errs, jobs = {}, [], []
+    for gid, fl in pl["todo"].items():
+        if gid not in blobs:
+            blobs[gid] = _V1Blob(gid, pl["d"]["v1"]["timestamp"], box)
+        jobs += [(gid, u) for u in _v1_units(fl)]
+
+    def job(gid, unit):
+        if _cancel.is_set() or errs:
+            return
+        try:
+            r = _v1_read_unit(arc, blobs[gid], unit, fresh, flock, bump, stats)
+            with flock:
+                for k, v in r.items():
+                    results[(gid,) + k] = v
+        except Exception as exc:
+            errs.append(exc)
+
+    if jobs:
+        with ThreadPoolExecutor(max_workers=get_download_threads()) as ex:
+            for fu in as_completed([ex.submit(job, g, u) for g, u in jobs]):
+                fu.result()
+    if _cancel.is_set():
+        raise RuntimeError("anulowano")
+    if errs:
+        raise RuntimeError(f"pobieranie main.bin: {len(errs)} błędów, np. {errs[0]}")
+    items = []
+    for it in pl["items"]:
+        it = dict(it)
+        key = it.pop("_v1", None)
+        if key is not None:
+            md5, chunks = results[key]
+            if it["md5"] and md5 != it["md5"]:
+                raise RuntimeError(f"MD5 pliku {it['path']} z main.bin nie zgadza się z manifestem v1")
+            it["md5"], it["chunks"] = md5, chunks
+        items.append(it)
+    return {"version": 2, "contentSystem": 1, "depot": {"items": items}}
+
+
+def _v1_redist_manifest(m: dict, target: str) -> tuple:
+    """A v2 dependency placed by a v1 build into `targetDir` (nGlide → system/): a copy of its manifest with
+    the paths moved there (same chunks, own id). Paths already under the target (DOSBOX/…) stay as they are."""
+    t = target.replace("\\", "/").strip("/")
+    items = (m["man"].get("depot") or {}).get("items") or []
+    rel = lambda x: str(x or "").replace("\\", "/").lstrip("/")          # noqa: E731
+    if not t or all(rel(i.get("path")).lower().startswith(t.lower() + "/") for i in items):
+        return m["manifest"], m["man"]
+    man = json.loads(json.dumps(m["man"]))
+    for i in (man.get("depot") or {}).get("items") or []:
+        i["path"] = (t + "/" + rel(i.get("path"))).replace("/", "\\")
+    return hashlib.md5(f"gog-cs-v1-target:{m['manifest']}:{t}".encode()).hexdigest(), man
+
+
 def _archive_build(g: dict, pid: str, build: dict, meta: dict, plan: dict, box: dict) -> dict:
     """Fetch what the archive lacks for `plan` (manifests, chunks, dependency
     manifests + chunks), verify EVERYTHING the record references, then commit
@@ -3831,21 +4160,73 @@ def _archive_build(g: dict, pid: str, build: dict, meta: dict, plan: dict, box: 
                 except DA.ArchiveError as exc:
                     log(f"trusted chunks {pid}/{r.get('build_id')}: {exc}")
     arc.put_meta(pid, build_id, meta)
+    # Before any download: a complete record of this build that has lost chunks (repair) is no longer
+    # complete — a failed repair must not leave it published. One with all chunks stays published while
+    # its scope grows (see below).
+    cur = arc.read_record(pid, build_id)
+    if cur and cur.get("state") == DA.STATE_COMPLETE:
+        try:
+            lost = bool(arc.missing_chunks(arc.record_chunks(cur)))
+        except DA.ArchiveError:
+            lost = True
+        if lost:
+            cur["state"] = DA.STATE_INCOMPLETE
+            arc.write_record(cur)
 
     _mig_event(pid, "manifests")
-    for d in plan["depots"]:
-        if not arc.has_manifest("depot", d["manifest"]):
-            arc.put_manifest("depot", d["manifest"], _cdn_depot_manifest(d))
-    dep_recs = []
-    if plan["deps"]:
+    fresh = set()                              # downloaded + checked in memory this run
+    mans = []
+    if plan["deps"]:                           # before any download: a missing redist fails fast
         mans, dep_missing = _dependency_manifests(plan["deps"])
         if dep_missing:
             raise RuntimeError("brakujące zależności w repozytorium GOG: "
                                + ", ".join(sorted(dep_missing)))
+    # A v1 depot is (re)converted when its manifest is absent or a chunk it names is gone (repair): its
+    # chunks exist only in this archive, the GOG chunk CDN cannot provide them.
+    v1_todo = [d for d in plan["depots"] if d.get("v1") and (
+        not arc.has_manifest("depot", d["manifest"])
+        or arc.missing_chunks(DA.manifest_chunks(arc.get_manifest("depot", d["manifest"]))))]
+    v1_added = 0
+    if v1_todo:
+        # v1: the files themselves are downloaded here (main.bin → chunks) — the manifest exists only after.
+        v1_plans = [_v1_plan_depot(arc, d) for d in v1_todo]
+        need = sum(pl["bytes"] for pl in v1_plans)        # plain bytes: an upper bound of the zlib chunks
+        free = _free_bytes(arc.root)
+        if free is not None and need and free < need + 64 * 1024 * 1024:
+            raise RuntimeError(f"za mało miejsca na archiwum: potrzeba do {_human(need)} "
+                               f"(+64 MB zapasu), wolne {_human(free)}")
+        _mig_event(pid, "download", bytes=need, chunks=0)
+        _push_log(f"Archiwizuję build v1 (main.bin): {len(v1_todo)} depot(y), {_human(need)}.")
+        hub = _ProgressHub(need)
+        hub.start(1, f"Archiwum v1: {g.get('title') or pid}", need)
+        seen, slock = {"n": 0}, threading.Lock()
+
+        def bump(n):
+            with slock:
+                seen["n"] += n
+            hub.progress(1, seen["n"])
+        blobs, stats = {}, {"added": 0}
+        ok = False
+        try:
+            for pl in v1_plans:
+                arc.put_manifest("depot", pl["d"]["manifest"],
+                                 _v1_download_depot(arc, pl, box, fresh, blobs, bump, stats))
+            ok = True
+        finally:
+            hub.finish(1, ok and not _cancel.is_set())
+        v1_added = stats["added"]
+    for d in plan["depots"]:
+        if not arc.has_manifest("depot", d["manifest"]):
+            arc.put_manifest("depot", d["manifest"], _cdn_depot_manifest(d))
+    dep_recs = []
+    if mans:
+        targets = meta.get("v1RedistTargets") or {}
         for m in mans:
-            if not arc.has_manifest("dep", m["manifest"]):
-                arc.put_manifest("dep", m["manifest"], m["man"])
-            dep_recs.append({"id": m["id"], "manifest": m["manifest"]})
+            mid, man = (_v1_redist_manifest(m, targets[m["id"]]) if m["id"] in targets
+                        else (m["manifest"], m["man"]))
+            if not arc.has_manifest("dep", mid):
+                arc.put_manifest("dep", mid, man)
+            dep_recs.append({"id": m["id"], "manifest": mid})
 
     depots = [{"manifest": str(d["manifest"]), "productId": str(d.get("productId")),
                "languages": list(d.get("languages") or []),
@@ -3868,8 +4249,14 @@ def _archive_build(g: dict, pid: str, build: dict, meta: dict, plan: dict, box: 
         "state": DA.STATE_INCOMPLETE,
         "created": prev.get("created") or _now(),
     }
+    if meta.get("contentSystem") == 1:
+        # stored as v2 chunks + manifests (generation 2 above = the archive format); the GOG source was v1
+        rec["source"] = {"content_system": 1, "timestamp": str(meta.get("timestamp") or "")}
     rec["collisions"] = _count_collisions(arc, depots)
-    arc.write_record(rec)                      # visible as "incomplete" from now on
+    # A complete record of this build (narrower scope) stays published while the scope grows: a failed
+    # extension (new language / DLC, unreadable chunk) must not take a working game off Lumen / EmuStart.
+    if prev.get("state") != DA.STATE_COMPLETE:
+        arc.write_record(rec)                  # visible as "incomplete" from now on
 
     chunks = arc.record_chunks(rec)
     uniq = {}
@@ -3885,7 +4272,7 @@ def _archive_build(g: dict, pid: str, build: dict, meta: dict, plan: dict, box: 
     if free is not None and need and free < need + 64 * 1024 * 1024:
         raise RuntimeError(f"za mało miejsca na archiwum: potrzeba {_human(need)} "
                            f"(+64 MB zapasu), wolne {_human(free)}")
-    plan["added_bytes"] = need
+    plan["added_bytes"] = need + v1_added
 
     # Which secure link serves which chunk: base / DLC product, or the
     # dependency store.
@@ -3898,7 +4285,6 @@ def _archive_build(g: dict, pid: str, build: dict, meta: dict, plan: dict, box: 
             owner.setdefault((c.get("compressedMd5") or "").lower(), "__dep__")
 
     _mig_event(pid, "download", bytes=need, chunks=len(missing))
-    fresh = set()                              # downloaded + checked in memory this run
     if missing:
         _push_log(f"Archiwizuję: {len(missing)} chunków, {_human(need)} do pobrania.")
         links, llock = {}, threading.Lock()
@@ -3975,6 +4361,8 @@ _PREFETCH_AHEAD = 4
 
 def _fetch_build_and_meta(pid: str) -> tuple:
     build = _pick_build(pid)
+    if _is_v1(build):
+        return build, _v1_meta(pid, build)
     return build, _cs_get_zlib(build["link"])
 
 
@@ -3994,7 +4382,7 @@ def _archive_scope(g: dict, langs, dlcs, box: dict) -> tuple:
     try:
         build, meta = _build_and_meta(pid)
     except Exception as exc:
-        raise _GameSkip(f"brak obsługiwanego buildu Galaxy (generation 2, {_MY_OS}): {exc}")
+        raise _GameSkip(f"brak obsługiwanego buildu Galaxy ({_MY_OS}): {exc}")
     build_id = str(build.get("build_id") or meta.get("buildId") or "")
     # Everything the build has: every language of the base game and every owned DLC — installers often held
     # one language where the depots have several; Lumen / EmuStart pick languages and DLC at install time.
@@ -4396,17 +4784,12 @@ def _archive_all_loop(arc, targets: list, pid_of, pend: set, report: dict, pre) 
             report["skipped"].append({"title": g["title"], "reason": str(exc)})
             _push_log(f"↷ Pominięto (instalatory zostają): {exc}")
             _mig_event(pid, "result", result="skipped", reason=str(exc))
+            _journal_mark(arc, pid, DA.PH_SKIPPED, str(exc))
         except Exception as exc:
             report["errors"].append({"title": g["title"], "error": str(exc)})
             _push_log(f"✗ {g['title']}: {exc} — instalatory nietknięte.")
             _mig_event(pid, "result", result="error", reason=str(exc))
-            try:
-                j = arc.read_journal(pid)
-                if j and j.get("phase") not in DA.PENDING_CLEANUP:
-                    j["phase"], j["error"] = "failed", str(exc)
-                    arc.write_journal(pid, j)
-            except Exception:
-                pass
+            _journal_mark(arc, pid, "failed", str(exc))
         else:
             report["deleted_bytes"] += r["deleted_bytes"]
             report["added_bytes"] += r["added_bytes"]
@@ -4425,6 +4808,18 @@ def _archive_all_loop(arc, targets: list, pid_of, pend: set, report: dict, pre) 
                 _update_worker(g["id"], extras_only=True)
             except Exception as exc:
                 _push_log(f"⚠ Extras {g['title']}: {exc}")
+
+
+def _journal_mark(arc, pid: str, phase: str, why: str) -> None:
+    """Close an unfinished journal (skipped / failed) with its reason — never one awaiting cleanup or done
+    (a skip before this run wrote its own `planned` journal leaves an earlier finished migration as it is)."""
+    try:
+        j = arc.read_journal(pid)
+        if j and j.get("phase") not in DA.PENDING_CLEANUP + (DA.PH_DONE,):
+            j["phase"], j["error"] = phase, why
+            arc.write_journal(pid, j)
+    except Exception:
+        pass
 
 
 def _emit_archive_report(report: dict) -> None:
@@ -5202,10 +5597,23 @@ def _update_worker_body(g, rows, has_installer, extras_only, dest_dir, extras_di
                     same_n += 1
                     known_n += 1
                     continue
+                # GOG's CDN sends the file's MD5 as its ETag: a file already on disk with that MD5 is the
+                # same object — no download, even on the first run with no remembered state.
+                etag = str((sig or {}).get("etag") or "").strip('"').lower()
+                if not deep and _HEX32_RE.match(etag) and dest.exists() and (
+                        not (sig or {}).get("length") or int(sig["length"]) == dest.stat().st_size):
+                    pre_md5 = fstate.md5(dest) or _md5_path(dest)
+                    if pre_md5.lower() == etag:
+                        fstate.put(dest, pre_md5, sig)
+                        same_n += 1
+                        known_n += 1
+                        continue
+                else:
+                    pre_md5 = None
                 data   = _fetch_to_ram(cdn, hub, sid=idx, name=dest.name)
                 hub.finish(idx, True)
                 dl_md5 = _md5_bytes(data)
-                local = None if deep else fstate.md5(dest)
+                local = pre_md5 or (None if deep else fstate.md5(dest))
                 identical = (dest.exists()
                              and dest.stat().st_size == len(data)
                              and (local or _md5_path(dest)).lower() == dl_md5.lower())

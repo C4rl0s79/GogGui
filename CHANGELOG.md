@@ -6,6 +6,34 @@ wersjonowanie wg [SemVer](https://semver.org/lang/pl/).
 
 ## [Unreleased]
 
+## [1.6.0] - 2026-11-10
+
+### Dodano
+- **Archiwum depotów obsługuje gry ze starym buildem Galaxy (content-system v1).** Wiele klasycznych gier
+  (np. Betrayal at Krondor, Unreal Gold, World in Conflict) ma na GOG tylko build generation 1, a „Aktualizuj
+  wszystko” je dotąd pomijało. Teraz pliki takiej gry są pobierane z `main.bin` (zapytania HTTP Range, sąsiednie
+  małe pliki w jednym zapytaniu), sprawdzane MD5 z manifestu v1 i zapisywane w archiwum jako zwykłe chunki zlib
+  z manifestem w formacie v2 — instalacja z archiwum, Lumen i serwer EmuStart czytają je jak każdy inny build.
+  Rekord takiej gry ma pole `source: {content_system: 1, timestamp}`. „Napraw” odtwarza brakujące chunki
+  takiej gry z `main.bin` (CDN chunków v2 ich nie ma, naprawa pobiera tylko pliki z brakującymi chunkami).
+  Redisty buildu v1 (DOSBox, nGlide, MSVC, DirectX, .NET) trafiają do archiwum z repozytorium zależności GOG;
+  redist z własnym katalogiem docelowym (np. nGlide → `system/`) ma w archiwum kopię manifestu z przesuniętymi
+  ścieżkami. Instalacja online gry tylko z buildem v1 kończy się czytelnym komunikatem (instalator offline albo
+  archiwum).
+
+### Zmieniono
+- **Extras przy „Aktualizuj wszystko” nie są pobierane ponownie:** CDN GOG podaje MD5 pliku jako ETag, więc
+  plik na dysku o tym samym MD5 jest uznawany za aktualny bez pobierania do RAM — także przy pierwszym
+  przebiegu po aktualizacji programu albo po utracie `_state/file_state.json`.
+- Dziennik migracji pominiętej gry ma stan `skipped` z powodem (wcześniej zostawał `planned` bez powodu),
+  nieudanej — `failed` z błędem; zakończonej migracji (`done`) późniejsze pominięcie nie nadpisuje.
+
+### Naprawiono
+- **Gry nie znikają z Lumena / serwera EmuStart po nieudanym „Aktualizuj wszystko”:** rozszerzenie zakresu
+  tego samego buildu (nowy język, DLC) nie oznacza już kompletnego rekordu jako `incomplete` na czas pobierania
+  — gdy pobranie albo weryfikacja się nie powiedzie (np. nieczytelny plik na dysku archiwum), gra zostaje
+  dostępna w dotychczasowym zakresie.
+
 ## [1.5.1] - 2026-11-10
 
 ### Zmieniono
