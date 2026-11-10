@@ -68,7 +68,7 @@ class FileStateUnit(unittest.TestCase):
         self.assertIsNone(FS.FileState(self.store, self.root).md5(self.f))
 
 
-class ExtrasRefresh(unittest.TestCase):
+class ExtrasBase(unittest.TestCase):
     PATCH = ("BASE", "get_settings", "scan_games", "get_download_manifest", "_access_token_box",
              "_resolve_downlink", "_remote_md5", "_head_signature", "_fetch_to_ram",
              "_md5_path", "_send_js", "log")
@@ -128,6 +128,8 @@ class ExtrasRefresh(unittest.TestCase):
         self.hashed.clear()
         self.assertTrue(app._update_worker("1", extras_only=True))
 
+
+class ExtrasRefresh(ExtrasBase):
     def test_second_run_downloads_and_hashes_nothing(self):
         self.run_update()
         self.assertEqual(self.ram, ["manual.pdf"])          # first run: full RAM compare
@@ -163,3 +165,25 @@ class ExtrasRefresh(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ExtrasEtagIsMd5(ExtrasBase):
+    """GOG's CDN sends the file MD5 as ETag: an extra already on disk is confirmed without any download,
+    even with no remembered state (first run after an upgrade, state file lost)."""
+
+    def setUp(self):
+        super().setUp()
+        self.etags = {n: f'"{hashlib.md5(b).hexdigest()}"' for n, b in self.remote.items()}
+
+    def test_first_run_downloads_nothing_when_etag_matches(self):
+        self.run_update()
+        self.assertEqual(self.ram, [])
+        self.run_update()
+        self.assertEqual((self.ram, self.hashed), ([], []))     # remembered: not even hashed again
+
+    def test_changed_file_on_cdn_is_still_fetched(self):
+        self.remote["manual.pdf"] = b"PDF-2-new"
+        self.etags["manual.pdf"] = f'"{hashlib.md5(b"PDF-2-new").hexdigest()}"'
+        self.run_update()
+        self.assertEqual(self.ram, ["manual.pdf"])
+        self.assertEqual((self.folder / "manual.pdf").read_bytes(), b"PDF-2-new")

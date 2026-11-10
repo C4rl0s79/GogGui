@@ -51,6 +51,7 @@ PH_COMMITTED = "committed"         # archive verified + record complete; delete 
 PH_CLEANUP = "cleanup"             # deleting the frozen list (may be partial)
 PH_CLEANUP_FAILED = "cleanup_failed"
 PH_DONE = "done"
+PH_SKIPPED = "skipped"           # build not archivable (reason in "error"); installers untouched
 
 PENDING_CLEANUP = (PH_COMMITTED, PH_CLEANUP, PH_CLEANUP_FAILED)
 

@@ -913,3 +913,229 @@ class MetaExport(ArchiveTestBase):
         app._archive_all_worker()
         self.assertTrue((self.folder("alpha") / "product_alpha.json").exists())
         self.assertTrue((self.folder("alpha") / "boxart_alpha.jpg").exists())
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+
+class _FakeRange:
+    def __init__(self, data: bytes):
+        import io
+        self.status, self._b = 206, io.BytesIO(data)
+
+    def read(self, n=-1):
+        return self._b.read(min(n, 7) if n and n > 0 else n)     # short reads, like a socket
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+
+class V1Base(ArchiveTestBase):
+    """A game with only a Galaxy generation-1 build: repository.json + depot manifests + one main.bin per
+    product, plus two redists (one with a targetDir). No tests here — subclasses share the world."""
+    PID, TS = "300", "26557639"
+
+    def setUp(self):
+        super().setUp()
+        w, pid, ts = self.w, self.PID, self.TS
+        big = bytes(range(256)) * 9000                      # > 2 chunks of 1 MiB
+        self.files = {"/SAVE/ANTARA.SCF": b"SAVE", "/RDATA/A.WDB": b"A" * 50, "/game.exe": b"EXE-v1",
+                      "/data/big.dat": big, "/empty.txt": b""}
+        blob, entries = bytearray(), []
+        for path, data in self.files.items():
+            blob += b"\x00" * 13                              # gaps between files, as in real main.bin
+            entries.append({"offset": len(blob), "size": len(data), "path": path,
+                            "hash": hashlib.md5(data).hexdigest(), "url": f"{pid}/main.bin"})
+            blob += data
+        entries.append({"path": "/SAVE", "directory": True})
+        entries.append({"path": "/SAVE/dummy.txt", "size": 0})       # real v1: empty file, no offset/url
+        self.files["/SAVE/dummy.txt"] = b""
+        sup = b"SUPPORT-EXE"
+        entries_neutral = [{"offset": len(blob), "size": len(sup), "support": True,
+                            "path": f"{pid}/galaxy_support.exe", "hash": hashlib.md5(sup).hexdigest(),
+                            "url": f"{pid}/main.bin"}]
+        blob += sup
+        self.blob = bytes(blob)
+        base = f"v1cdn/{pid}/windows/{ts}"
+        self.v1 = {
+            f"{base}/repository.json": {"product": {
+                "timestamp": int(ts), "installDirectory": "Antara", "rootGameID": pid,
+                "gameIDs": [{"gameID": pid, "name": {"en": "Antara"}, "dependencies": []}],
+                "depots": [
+                    {"languages": ["Neutral"], "size": str(len(sup)), "gameIDs": [pid],
+                     "systems": ["Windows"], "manifest": "neutral-uuid.json"},
+                    {"languages": ["English"], "size": str(sum(map(len, self.files.values()))),
+                     "gameIDs": [pid], "systems": ["Windows"], "manifest": "english-uuid.json"},
+                    {"languages": ["English"], "size": "5", "gameIDs": [pid], "systems": ["Mac"],
+                     "manifest": "mac-uuid.json"},
+                    {"redist": "DOSBox074", "size": "0", "targetDir": "DOSBOX"},
+                    {"redist": "nGlide_103", "size": "0", "targetDir": "system/"}]}},
+            f"{base}/neutral-uuid.json": {"version": 1, "depot": {"files": entries_neutral}},
+            f"{base}/english-uuid.json": {"version": 1, "depot": {"files": entries}},
+        }
+        w.add_game(pid, "antara", langs=("en",), dlc_files=False, dlc_meta=False)
+        w.deps["DOSBox074"] = ("dosbox00", {"depot": {"items": [_file("DOSBOX\\DOSBox.exe", b"DOSBOX", w.cdn)]}})
+        w.deps["nGlide_103"] = ("nglide00", {"depot": {"items": [_file("\\glide.dll", b"GLIDE", w.cdn)]}})
+        w.builds[pid] = {"build_id": "9121", "generation": 1, "legacy_build_id": int(ts),
+                         "version_name": "", "link": f"https://{base}/repository.json"}
+        orig_meta = app._cs_get_zlib
+        self.v1_gets = []
+
+        def cs(url):
+            key = url.split("://", 1)[1]
+            if key in self.v1:
+                self.v1_gets.append(key)
+                return json.loads(json.dumps(self.v1[key]))
+            return orig_meta(url)
+        app._cs_get_zlib = cs
+        self.ranges = []
+        app._authed_json = lambda url, box: {"urls": [{"endpoint_name": "fastly", "url_format": "blob://{path}",
+                                                       "parameters": {"path": f"/windows/{ts}/"}}]}
+
+        def rng(url, start, length):
+            import urllib.error
+            if url != f"blob:///windows/{ts}/{pid}/main.bin":   # only the second candidate path exists
+                raise urllib.error.HTTPError(url, 404, "nf", {}, None)
+            self.ranges.append((start, length))
+            return _FakeRange(self.blob[start:start + length])
+        for k in ("_authed_json", "_v1_open"):
+            self._orig.setdefault(k, getattr(app, k))
+        app._v1_open = rng
+
+
+class V1Build(V1Base):
+    def test_v1_build_archived_as_v2_chunks_and_installs_offline(self):
+        self.assertTrue(app._archive_all_worker())
+        rec = self.arc().read_record(self.PID, "9121")
+        self.assertEqual(rec["state"], DA.STATE_COMPLETE)
+        self.assertEqual(rec["generation"], 2)                      # archive format
+        self.assertEqual(rec["source"], {"content_system": 1, "timestamp": self.TS})
+        self.assertEqual(rec["scope"]["languages"], ["en"])
+        self.assertEqual(len(rec["depots"]), 2)                     # Mac depot left out
+        for d in rec["depots"]:
+            self.assertRegex(d["manifest"], r"^[0-9a-f]{32}$")
+        # every chunk is a real zlib chunk named by its compressed MD5, plain MD5 and size match
+        for c in self.arc().record_chunks(rec):
+            comp = self.arc().read_chunk(c["compressedMd5"])
+            self.assertEqual(hashlib.md5(zlib.decompress(comp, 15)).hexdigest(), c["md5"])
+            self.assertLessEqual(c["size"], app.V1_CHUNK)
+        # small neighbouring files share one Range request; nothing was fetched from the v2 chunk CDN
+        self.assertLess(len(self.ranges), len(self.files))
+        dep_chunks = {c["compressedMd5"] for _mid, man in self.w.deps.values() for c in DA.manifest_chunks(man)}
+        self.assertLessEqual(set(self.fetched), dep_chunks)        # game files never from the v2 chunk CDN
+        self.assertEqual(self.arc().read_journal(self.PID)["phase"], DA.PH_DONE)
+
+        app._v1_open = app._cs_get_zlib = app._pick_build = lambda *a: (_ for _ in ()).throw(
+            AssertionError("sieć zablokowana w teście"))
+        self.assertTrue(app._archive_install_worker(self.PID, None, ["en"], []))
+        d = app.GOG_GAMES / "Antara"
+        for path, data in self.files.items():
+            self.assertEqual((d / path.lstrip("/")).read_bytes(), data, path)
+        self.assertEqual((d / "galaxy_support.exe").read_bytes(), b"SUPPORT-EXE")   # no product folder
+        self.assertEqual((d / "DOSBOX/DOSBox.exe").read_bytes(), b"DOSBOX")        # already under targetDir
+        self.assertEqual((d / "system/glide.dll").read_bytes(), b"GLIDE")          # moved to targetDir
+        self.assertFalse((d / "glide.dll").exists())
+
+    def test_second_run_downloads_nothing(self):
+        self.assertTrue(app._archive_all_worker())
+        self.ranges.clear()
+        self.assertTrue(app._archive_all_worker())
+        self.assertEqual(self.ranges, [])
+
+    def test_md5_mismatch_keeps_record_incomplete_and_installers(self):
+        self.blob = self.blob.replace(b"EXE-v1", b"EXE-v2")
+        before = self.installers("antara")
+        self.assertFalse(app._archive_all_worker())
+        self.assertEqual(self.installers("antara"), before)
+        self.assertIsNone(self.arc().read_record(self.PID, "9121"))
+        j = self.arc().read_journal(self.PID)
+        self.assertEqual(j["phase"], "failed")
+        self.assertIn("MD5", j["error"])
+
+
+class SkipJournal(ArchiveTestBase):
+    def test_skipped_game_journal_records_reason(self):
+        self.w.add_game("100", "alpha")
+        app._pick_build = lambda pid: (_ for _ in ()).throw(RuntimeError("brak buildów"))
+        app._archive_all_worker()
+        j = self.arc().read_journal("100")
+        self.assertEqual(j["phase"], DA.PH_SKIPPED)
+        self.assertIn("brak buildów", j["error"])
+
+
+class V1Repair(V1Base):
+    def test_repair_rebuilds_lost_v1_chunks_from_main_bin(self):
+        self.assertTrue(app._archive_all_worker())
+        rec = self.arc().read_record(self.PID, "9121")
+        man = next(self.arc().get_manifest("depot", d["manifest"]) for d in rec["depots"]
+                   if d["languages"] == ["en"])
+        exe = next(i for i in man["depot"]["items"] if i.get("path") == "game.exe")
+        lost = exe["chunks"][0]["compressedMd5"]
+        self.arc().chunk_path(lost).unlink()
+        self.ranges.clear()
+        self.fetched.clear()
+        self.assertTrue(app._archive_repair_worker(self.PID, "9121"))
+        self.assertTrue(self.arc().has_chunk(lost))
+        self.assertEqual([n for _s, n in self.ranges if n > 1], [len(b"EXE-v1")])   # only the damaged file
+        self.assertFalse(self.fetched)                     # never from the v2 chunk CDN
+        self.assertTrue(app._archive_install_worker(self.PID, None, ["en"], []))
+
+    def test_same_size_corrupt_chunk_is_not_trusted(self):
+        """a chunk file left from an aborted run with the right size but wrong bytes is read by the verify
+        pass (not taken as checked): the record is not committed over it"""
+        data = self.files["/game.exe"]
+        comp = zlib.compress(data, 6)
+        arc = self.arc()
+        arc.ensure()
+        p = arc.chunk_path(hashlib.md5(comp).hexdigest())
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_bytes(b"X" * len(comp))
+        self.assertFalse(app._archive_all_worker())
+        self.assertEqual(arc.read_record(self.PID, "9121")["state"], DA.STATE_INCOMPLETE)
+        self.assertTrue(app._archive_all_worker())          # the bad copy was dropped → refetched
+        self.assertEqual(arc.read_record(self.PID, "9121")["state"], DA.STATE_COMPLETE)
+
+    def test_done_journal_is_not_relabelled_by_a_later_skip(self):
+        self.assertTrue(app._archive_all_worker())
+        arc = self.arc()
+        app._journal_mark(arc, self.PID, DA.PH_SKIPPED, "x")
+        self.assertEqual(arc.read_journal(self.PID)["phase"], DA.PH_DONE)
+
+
+class ScopeGrowthKeepsComplete(ArchiveTestBase):
+    def test_failed_scope_extension_keeps_the_complete_record(self):
+        self.w.add_game("100", "alpha", langs=("en",))
+        self.assertTrue(app._archive_all_worker())
+        self.assertEqual(self.arc().read_record("100", "B1")["scope"]["languages"], ["en"])
+        # the same build gains a German depot; its download fails
+        cdn, mid = self.w.cdn, "100deB1"
+        self.w.manifests[mid] = {"depot": {"items": [_file("lang\de.txt", b"de-100", cdn)]}}
+        self.w.metas["100"]["depots"].append({"productId": "100", "languages": ["de-DE"], "manifest": mid})
+        bad = DA.manifest_chunks(self.w.manifests[mid])[0]["compressedMd5"]
+
+        def fail(md5):
+            if md5 == bad:
+                raise RuntimeError("[WinError 1392] uszkodzony")
+        self.fail_fetch = fail
+        self.assertFalse(app._archive_all_worker())
+        rec = self.arc().read_record("100", "B1")
+        self.assertEqual(rec["state"], DA.STATE_COMPLETE)            # still published
+        self.assertEqual(rec["scope"]["languages"], ["en"])
+        self.fail_fetch = None
+        self.assertTrue(app._archive_all_worker())
+        self.assertEqual(self.arc().read_record("100", "B1")["scope"]["languages"], ["de", "en"])
+
+
+class V1FailedRepair(V1Base):
+    def test_failed_repair_does_not_leave_a_complete_record_with_lost_chunks(self):
+        self.assertTrue(app._archive_all_worker())
+        rec = self.arc().read_record(self.PID, "9121")
+        self.arc().chunk_path(self.arc().record_chunks(rec)[0]["compressedMd5"]).unlink()
+
+        def down(*a):
+            raise RuntimeError("CDN niedostępny")
+        app._v1_open = down
+        self.assertFalse(app._archive_repair_worker(self.PID, "9121"))
+        self.assertEqual(self.arc().read_record(self.PID, "9121")["state"], DA.STATE_INCOMPLETE)
