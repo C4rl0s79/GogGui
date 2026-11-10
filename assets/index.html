@@ -1069,6 +1069,9 @@ main { height: 100%; overflow: hidden; display: flex; flex-direction: column; mi
           <div class="srow" style="margin-top:14px"><label for="s-archive-mode" data-i18n="set.archiveMode">Pobieraj jako lokalne depoty zamiast instalatorów offline</label>
             <input type="checkbox" id="s-archive-mode"></div>
           <div class="wiz-note" style="margin-top:6px" data-i18n="set.archiveModeNote">Przy pobieraniu i aktualizacji zapisuj manifesty oraz skompresowane dane depotów. Istniejące instalatory zastępuj dopiero po zweryfikowaniu kompletnego archiwum danej gry. Extras pozostają bez zmian.</div>
+          <div class="srow" style="margin-top:14px"><label for="s-deep-verify" data-i18n="set.deepVerify">Pełna weryfikacja przy każdej aktualizacji</label>
+            <input type="checkbox" id="s-deep-verify"></div>
+          <div class="wiz-note" style="margin-top:6px" data-i18n="set.deepVerifyNote">Wyłączone (zalecane): kolejne aktualizacje ufają temu, co już raz zweryfikowano — nie liczą ponownie sum niezmienionych plików, nie pobierają extras bez sumy GOG, gdy CDN zgłasza ten sam plik, i sprawdzają w archiwum tylko nowe chunki. Włączone: każda aktualizacja sprawdza wszystko od nowa (wolniej).</div>
           <div class="wiz-note" style="margin-top:4px" data-i18n="set.archiveModeNote2">Samo włączenie niczego nie zmienia na dysku. Migracja rusza po „Aktualizuj wszystko” — gra po grze: pobranie → weryfikacja → zatwierdzenie → usunięcie zastąpionych instalatorów tej gry → dopiero następna. Instalatory są usuwane trwale (nie do Kosza), żeby realnie zwolnić miejsce; przez chwilę potrzeba miejsca na archiwum jednej gry. Archiwum: <code>&lt;katalog instalatorów&gt;/_depots</code>.</div>
         </div>
 
@@ -1294,6 +1297,7 @@ const I18N = {
     'set.updateLangs':'Języki aktualizacji (installery)','set.updateLangsNote':'Kody języków oddzielone przecinkami (np. <code>en, pl</code>). Updater bierze pod uwagę tylko installery Windows w tych językach; stare wersje w extras są pomijane.',
     'set.depotLangs':'Domyślne języki instalacji (depot)','set.depotLangsNote':'Domyślne języki przy instalacji z depotów (np. <code>en, pl</code>). Można nadpisać przy każdej instalacji w oknie wyboru.',
     'set.archiveMode':'Pobieraj jako lokalne depoty zamiast instalatorów offline',
+    'set.deepVerify':'Pełna weryfikacja przy każdej aktualizacji','set.deepVerifyNote':'Wyłączone (zalecane): kolejne aktualizacje ufają temu, co już raz zweryfikowano — nie liczą ponownie sum niezmienionych plików, nie pobierają extras bez sumy GOG, gdy CDN zgłasza ten sam plik, i sprawdzają w archiwum tylko nowe chunki. Włączone: każda aktualizacja sprawdza wszystko od nowa (wolniej).',
     'set.archiveModeNote':'Przy pobieraniu i aktualizacji zapisuj manifesty oraz skompresowane dane depotów. Istniejące instalatory zastępuj dopiero po zweryfikowaniu kompletnego archiwum danej gry. Extras pozostają bez zmian.',
     'set.archiveModeNote2':'Samo włączenie niczego nie zmienia na dysku. Migracja rusza po „Aktualizuj wszystko” — gra po grze: pobranie → weryfikacja → zatwierdzenie → usunięcie zastąpionych instalatorów tej gry → dopiero następna. Instalatory są usuwane trwale (nie do Kosza), żeby realnie zwolnić miejsce; przez chwilę potrzeba miejsca na archiwum jednej gry. Archiwum: <code>&lt;katalog instalatorów&gt;/_depots</code>.',
     'status.offline':'⬇ Instalatory offline','status.arcComplete':'🗄 Depot lokalny: kompletny','status.arcIncomplete':'🗄 Depot lokalny: niekompletny','status.arcPending':'🗄 Depot zweryfikowany — czeka na sprzątanie',
@@ -1377,6 +1381,7 @@ const I18N = {
     'set.updateLangs':'Update languages (installers)','set.updateLangsNote':'Comma-separated language codes (e.g. <code>en, pl</code>). The updater only considers Windows installers in these languages; old versions parked in extras are skipped.',
     'set.depotLangs':'Default install languages (depot)','set.depotLangsNote':'Default languages for depot installs (e.g. <code>en, pl</code>). Can be overridden per install in the picker.',
     'set.archiveMode':'Download as local depots instead of offline installers',
+    'set.deepVerify':'Full verification on every update','set.deepVerifyNote':'Off (recommended): later updates trust what was already verified once — no re-hashing of unchanged files, no re-download of extras without a GOG checksum when the CDN reports the same file, and only new chunks are checked in the archive. On: every update re-checks everything (slower).',
     'set.archiveModeNote':'When downloading and updating, store manifests and compressed depot data. Existing installers are replaced only after the complete archive of that game has been verified. Extras stay as they are.',
     'set.archiveModeNote2':'Enabling this changes nothing on disk. Migration starts with “Update all” — one game at a time: download → verify → commit → delete that game’s replaced installers → only then the next game. Installers are deleted permanently (not to the Recycle Bin) so the space is really freed; temporarily you need room for one game’s archive. Archive: <code>&lt;installers dir&gt;/_depots</code>.',
     'status.offline':'⬇ Offline installers','status.arcComplete':'🗄 Local depot: complete','status.arcIncomplete':'🗄 Local depot: incomplete','status.arcPending':'🗄 Depot verified — cleanup pending',
@@ -1822,6 +1827,8 @@ function settingsToForm(s) {
   if (dl) dl.value = (Array.isArray(s['depot_langs']) ? s['depot_langs'] : ['en']).join(', ');
   const am = document.getElementById('s-archive-mode');
   if (am) am.checked = !!s['archive_mode'];
+  const dv = document.getElementById('s-deep-verify');
+  if (dv) dv.checked = !!s['deep_verify'];
   const sk = document.getElementById('s-sgdb-key');
   if (sk) {
     sk.value = '';
@@ -1850,6 +1857,7 @@ function settingsFromForm() {
     'update_langs': (n('s-update-langs') || 'en, pl').split(',').map(x => x.trim().toLowerCase()).filter(Boolean),
     'depot_langs': (n('s-depot-langs') || 'en').split(',').map(x => x.trim().toLowerCase()).filter(Boolean),
     'archive_mode': !!document.getElementById('s-archive-mode')?.checked,
+    'deep_verify': !!document.getElementById('s-deep-verify')?.checked,
     'sgdb_key': (document.getElementById('s-sgdb-key')?.value || '').trim(),
     'art_hero_source': artHeroSource,
     'art_logo_source': artLogoSource,

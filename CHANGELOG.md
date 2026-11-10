@@ -6,6 +6,24 @@ wersjonowanie wg [SemVer](https://semver.org/lang/pl/).
 
 ## [Unreleased]
 
+## [1.5.1] - 2026-11-10
+
+### Zmieniono
+- **Szybsze kolejne „Aktualizuj wszystko”** po pierwszym pobraniu i weryfikacji:
+  - extras: pamiętany stan plików (`<katalog instalatorów>/_state/file_state.json`, moduł `file_state.py`) —
+    niezmienione pliki (ten sam rozmiar i czas modyfikacji) nie są ponownie haszowane, a pliki bez sumy GOG nie są
+    pobierane do RAM, gdy CDN (HEAD: ETag / Last-Modified / długość) zgłasza ten sam obiekt;
+  - archiwum: zatwierdzony rekord bieżącego buildu jest uznawany za aktualny bez czytania manifestów i `stat`
+    każdego chunka; przy nowym buildzie nowe chunki są w pełni sprawdzane w pamięci zaraz po pobraniu (MD5,
+    dekompresja, MD5 po dekompresji), a chunki z wcześniej zatwierdzonych rekordów tej gry nie są czytane ponownie;
+  - sprzątanie nieużywanych chunków raz na cały przebieg i tylko wśród chunków usuniętych buildów (zamiast
+    przeglądu całego archiwum po każdej grze); manifesty czytane raz na build;
+  - skan folderu pobrań tylko dla bieżącej gry (zamiast pełnego skanu kilka razy na grę), buildy kolejnych gier
+    pobierane w tle, lista posiadanych produktów z pamięci podręcznej (30 min);
+  - pełna weryfikacja (naprawa, stan archiwum) sprawdza chunki równolegle.
+- Nowa opcja *Ustawienia → Pobieranie → „Pełna weryfikacja przy każdej aktualizacji”* (domyślnie wyłączona)
+  przywraca sprawdzanie wszystkiego od nowa.
+
 ## [1.5.0] - 2026-11-09
 
 ### Dodano

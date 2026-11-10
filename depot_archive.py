@@ -20,7 +20,8 @@ Layout (all paths relative to the archive root, default <installers>/_depots):
 Nothing in here ever holds tokens, cookies, secure links or account data: the
 archive is meant to be shared (EmuStart Server → Lumen). Records are written
 atomically; a record is "complete" only after every chunk it references was
-re-read and verified (see `verify_record`).
+fully verified (compressed MD5, inflate, plain MD5) — in memory right after its
+download, or by re-reading it (`verify_chunks`).
 
 The module is deliberately free of app/webview imports so it can be unit
 tested and later reused by a remote data source.
@@ -33,6 +34,7 @@ import os
 import re
 import time
 import zlib
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path, PurePosixPath
 
 FORMAT = "goggui-depot-archive"
@@ -175,6 +177,20 @@ def strip_secrets(obj):
     return obj
 
 
+def check_chunk_bytes(md5: str, data: bytes, plain_md5: str | None = None,
+                      compressed_checked: bool = False) -> None:
+    """Full check of chunk bytes already in memory (what verify_chunk does after
+    re-reading the file): compressed MD5, inflate, plain MD5. Raises CorruptChunk."""
+    if not compressed_checked and hashlib.md5(data).hexdigest().lower() != md5.lower():
+        raise CorruptChunk(md5, "MD5 danych się nie zgadza")
+    try:
+        out = zlib.decompress(data, 15)
+    except zlib.error as exc:
+        raise CorruptChunk(md5, f"zlib: {exc}")
+    if plain_md5 and hashlib.md5(out).hexdigest().lower() != plain_md5.lower():
+        raise CorruptChunk(md5, "MD5 po dekompresji się nie zgadza")
+
+
 def manifest_chunks(man: dict) -> list:
     """Every chunk a decoded depot manifest references (files + its SFC):
     [{"compressedMd5", "compressedSize", "md5", "size"}, …]."""
@@ -194,6 +210,9 @@ class DepotArchive:
 
     def __init__(self, root: Path):
         self.root = Path(root)
+        # Manifests are immutable per id (content-addressed by GOG): one read
+        # per archive instance, however many passes need them. Read-only use.
+        self._man_cache: dict = {}
 
     # ── format marker ─────────────────────────────────────────────────────
     def ensure(self) -> None:
@@ -226,8 +245,10 @@ class DepotArchive:
             return False
         return not compressed_size or st.st_size == int(compressed_size)
 
-    def put_chunk(self, md5: str, data: bytes) -> None:
-        if hashlib.md5(data).hexdigest().lower() != md5.lower():
+    def put_chunk(self, md5: str, data: bytes, verified: bool = False) -> None:
+        """`verified=True`: the caller already checked the compressed MD5 of
+        exactly these bytes (the downloader does) — don't hash them twice."""
+        if not verified and hashlib.md5(data).hexdigest().lower() != md5.lower():
             raise CorruptChunk(md5, "MD5 pobranych danych się nie zgadza")
         _atomic_write(self.chunk_path(md5), data)
 
@@ -276,12 +297,19 @@ class DepotArchive:
         return self._man_path(kind, mid).exists()
 
     def put_manifest(self, kind: str, mid: str, man: dict) -> None:
-        _write_json(self._man_path(kind, mid), strip_secrets(man))
+        clean = strip_secrets(man)
+        _write_json(self._man_path(kind, mid), clean)
+        self._man_cache[(kind, str(mid))] = clean
 
     def get_manifest(self, kind: str, mid: str) -> dict:
+        key = (kind, str(mid))
+        m = self._man_cache.get(key)
+        if m is not None:
+            return m
         m = _read_json(self._man_path(kind, mid))
         if m is None:
             raise ArchiveError(f"brak manifestu {kind} {mid} w archiwum")
+        self._man_cache[key] = m
         return m
 
     # ── build meta + records ──────────────────────────────────────────────
@@ -352,26 +380,38 @@ class DepotArchive:
                 out.append(c)
         return out
 
-    def verify_chunks(self, chunks: list, cancel=None, progress=None) -> dict:
+    def verify_chunks(self, chunks: list, cancel=None, progress=None, workers: int = 1) -> dict:
         """Full verification (re-read, MD5, inflate, plain MD5).
-        Returns {"missing": [md5…], "corrupt": [md5…], "checked": n}."""
-        res = {"missing": [], "corrupt": [], "checked": 0}
-        seen = set()
+        `workers` > 1 checks chunks in parallel (hashlib and zlib release the
+        GIL on large buffers). Returns {"missing": [md5…], "corrupt": [md5…],
+        "checked": n} — lists in input order."""
+        uniq, seen = [], set()
         for c in chunks:
+            m = (c.get("compressedMd5") or "").lower()
+            if m not in seen:
+                seen.add(m)
+                uniq.append((m, c))
+
+        def one(item):
             if cancel is not None and cancel():
                 raise ArchiveError("anulowano")
-            m = (c.get("compressedMd5") or "").lower()
-            if m in seen:
-                continue
-            seen.add(m)
+            m, c = item
             prob = self.verify_chunk(c)
-            res["checked"] += 1
+            if progress:
+                progress(int(c.get("compressedSize") or 0))
+            return m, prob
+
+        if workers > 1 and len(uniq) > 1:
+            with ThreadPoolExecutor(max_workers=workers) as ex:
+                results = list(ex.map(one, uniq))
+        else:
+            results = [one(it) for it in uniq]
+        res = {"missing": [], "corrupt": [], "checked": len(results)}
+        for m, prob in results:
             if prob == "missing":
                 res["missing"].append(m)
             elif prob == "corrupt":
                 res["corrupt"].append(m)
-            if progress:
-                progress(int(c.get("compressedSize") or 0))
         return res
 
     def referenced_chunks(self, exclude: set | None = None) -> set:
@@ -386,15 +426,24 @@ class DepotArchive:
                 refs.add((c.get("compressedMd5") or "").lower())
         return refs
 
-    def gc(self, removed_records: list | None = None) -> tuple[int, int]:
+    def gc(self, candidates: set | None = None) -> tuple[int, int]:
         """Delete chunk files no remaining record references. Objects shared
-        with another game/build/dependency stay. Returns (files, bytes)."""
+        with another game/build/dependency stay. Returns (files, bytes).
+
+        `candidates` (compressedMd5 set — e.g. the chunks of records just
+        removed) limits the sweep to those files instead of walking the whole
+        chunk tree; None = full sweep (also clears leftovers of aborted runs)."""
         refs = self.referenced_chunks()
         n = b = 0
         croot = self.root / "chunks"
         if not croot.is_dir():
             return (0, 0)
-        for p in croot.rglob("*"):
+        if candidates is None:
+            paths = croot.rglob("*")
+        else:
+            paths = (self.chunk_path(m) for m in sorted({str(x).lower() for x in candidates})
+                     if _HEX32.match(str(m)))
+        for p in paths:
             if not p.is_file() or not _HEX32.match(p.name):
                 continue
             if p.name.lower() in refs:

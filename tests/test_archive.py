@@ -304,17 +304,20 @@ class Migration(ArchiveTestBase):
         return {hashlib.md5(zlib.compress(SHARED)).hexdigest()}
 
     def test_verification_failure_keeps_installers_and_queue_continues(self):
+        # deep_verify: the full re-read pass runs over every chunk (fast mode
+        # checks fresh chunks in memory instead — see the test below)
+        self.settings["deep_verify"] = True
         self.w.add_game("100", "alpha")
         self.w.add_game("200", "beta")
         before = self.installers("alpha")
         orig = DA.DepotArchive.verify_chunks
         calls = {"n": 0}
 
-        def bad_verify(arc_self, chunks, cancel=None, progress=None):
+        def bad_verify(arc_self, chunks, cancel=None, progress=None, workers=1):
             calls["n"] += 1
             if calls["n"] == 1:
                 return {"missing": [], "corrupt": [chunks[0]["compressedMd5"]], "checked": 1}
-            return orig(arc_self, chunks, cancel, progress)
+            return orig(arc_self, chunks, cancel, progress, workers)
         DA.DepotArchive.verify_chunks = bad_verify
         try:
             self.assertFalse(app._archive_all_worker())
@@ -440,6 +443,81 @@ class Migration(ArchiveTestBase):
         self.assertEqual(self.fetched, [])
         rep = next(m for m in self.sent if m.get("type") == "migration_report")["report"]
         self.assertEqual(rep["deleted_bytes"], 0)
+
+    def test_corrupt_download_is_caught_in_memory_and_queue_continues(self):
+        self.w.add_game("100", "alpha")
+        self.w.add_game("200", "beta")
+        before = self.installers("alpha")
+        # GOG's plain MD5 of one alpha chunk disagrees with its bytes
+        mid = "100nB1"
+        self.w.manifests[mid]["depot"]["items"][1]["chunks"][0]["md5"] = "0" * 32
+        self.assertFalse(app._archive_all_worker())
+        self.assertEqual(self.installers("alpha"), before)
+        self.assertEqual(self.arc().read_record("100", "B1")["state"], DA.STATE_INCOMPLETE)
+        self.assertEqual(self.installers("beta"), ["setup_beta_0.9_(1000).exe"])
+        rep = next(m for m in self.sent if m.get("type") == "migration_report")["report"]
+        self.assertEqual([e["title"] for e in rep["errors"]], ["Alpha"])
+
+    def _count_verified(self):
+        seen = []
+        orig = DA.DepotArchive.verify_chunks
+
+        def counting(arc_self, chunks, cancel=None, progress=None, workers=1):
+            seen.extend((c.get("compressedMd5") or "").lower() for c in chunks)
+            return orig(arc_self, chunks, cancel, progress, workers)
+        DA.DepotArchive.verify_chunks = counting
+        self.addCleanup(setattr, DA.DepotArchive, "verify_chunks", orig)
+        return seen
+
+    def test_fresh_downloads_are_not_re_read(self):
+        self.w.add_game("100", "alpha")
+        seen = self._count_verified()
+        self.assertTrue(app._archive_all_worker())
+        self.assertEqual(seen, [])                     # all checked in memory
+        self.assertEqual(self.arc().read_record("100", "B1")["state"], DA.STATE_COMPLETE)
+
+    def test_second_run_skips_verification_unless_deep(self):
+        self.w.add_game("100", "alpha")
+        app._archive_all_worker()
+        seen = self._count_verified()
+        # a vanished chunk is not noticed by the trusted fast path…
+        lost = next(iter(self._chunks_of("100")))
+        self.arc().chunk_path(lost).unlink()
+        self.fetched.clear()
+        self.assertTrue(app._archive_all_worker())
+        self.assertEqual((seen, self.fetched), ([], []))
+        # …but deep_verify re-checks presence and fetches it back
+        self.settings["deep_verify"] = True
+        self.assertTrue(app._archive_all_worker())
+        self.assertEqual(self.fetched, [lost])
+        self.assertIn(lost, seen)
+
+    def test_new_build_verifies_only_new_chunks_and_gc_runs_once(self):
+        self.w.add_game("100", "alpha")
+        self.w.add_game("200", "beta")
+        app._archive_all_worker()
+        self.w.add_game("100", "alpha", build_id="B2", installers=False)
+        self.w.add_game("200", "beta", build_id="B2", installers=False)
+        self.w.games = self.w.games[:2]
+        seen = self._count_verified()
+        gcs = []
+        orig_gc = DA.DepotArchive.gc
+
+        def counting_gc(arc_self, candidates=None):
+            gcs.append(candidates)
+            return orig_gc(arc_self, candidates)
+        DA.DepotArchive.gc = counting_gc
+        self.addCleanup(setattr, DA.DepotArchive, "gc", orig_gc)
+        self.fetched.clear()
+        self.assertTrue(app._archive_all_worker())
+        self.assertEqual(seen, [])                     # shared chunks trusted, new ones fresh
+        self.assertNotIn(self._chunks_of_shared().pop(), self.fetched)
+        self.assertEqual(len(gcs), 1)                  # one sweep for the whole run
+        self.assertIsNotNone(gcs[0])                   # targeted, not a full tree walk
+        arc = self.arc()
+        self.assertIsNone(arc.read_record("100", "B1"))
+        self.assertFalse(arc.has_chunk(hashlib.md5(zlib.compress(b"GAME-100-B1")).hexdigest()))
+        self.assertTrue(arc.has_chunk(hashlib.md5(zlib.compress(SHARED)).hexdigest()))
 
     def test_not_enough_space(self):
         self.w.add_game("100", "alpha")

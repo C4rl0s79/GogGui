@@ -31,7 +31,7 @@ Write-Host "GOG Library Manager $version -> paczka linuksowa" -ForegroundColor C
 $sourceDirs  = @("assets")
 $excludeDirs = @("__pycache__", ".venv", "build", "dist", "_gog_cache", "json")
 # Stan użytkownika (settings.json, logi, pobrane pliki) NIE trafia do paczki.
-$rootFiles   = @("app.py", "depot_archive.py", "README.md", "CHANGELOG.md")
+$rootFiles   = @("app.py", "depot_archive.py", "file_state.py", "README.md", "CHANGELOG.md")
 $linuxDir    = Join-Path $PSScriptRoot "packaging\linux"
 
 foreach ($d in $sourceDirs) {

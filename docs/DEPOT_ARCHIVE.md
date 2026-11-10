@@ -42,8 +42,14 @@ dla każdej gry jest obowiązkowa i zapisywana w dzienniku
    najnowszy build bez gałęzi beta), języki, DLC, zależności.
 3. **Pobranie** brakujących manifestów, chunków i zależności (równolegle w
    obrębie tej jednej gry).
-4. **Pełna weryfikacja** archiwum: każdy chunk ponownie odczytany, MD5
-   skompresowanych danych, dekompresja, MD5 po dekompresji.
+4. **Pełna weryfikacja** archiwum: MD5 skompresowanych danych, dekompresja,
+   MD5 po dekompresji — dla każdego chunka rekordu. Chunk pobrany w tym
+   przebiegu jest sprawdzany w pamięci zaraz po pobraniu (bez ponownego
+   odczytu z dysku); chunk z wcześniej zatwierdzonego rekordu tej samej gry
+   był już tak sprawdzony i nie jest czytany ponownie; pozostałe obecne chunki
+   (np. z przerwanego przebiegu, wspólne z inną grą) są ponownie odczytywane
+   i sprawdzane (równolegle). Opcja „Pełna weryfikacja przy każdej
+   aktualizacji” (`deep_verify`) wymusza ponowny odczyt wszystkich.
 5. **Trwałe zatwierdzenie**: rekord buildu dostaje `"state": "complete"`
    (zapis atomowy), w dzienniku zostaje **zamrożona lista plików do usunięcia**
    (faza `committed`).
@@ -102,7 +108,15 @@ Archiwizowany jest bieżący build Galaxy (polityka „Aktualizuj wszystko”). 
 wersja instalatora różni się od wersji buildu albo archiwum przechodzi na nowszy
 build, raport pokazuje zmianę (`instalator 1.0 → depot 1.1`). Starsze rekordy tej
 samej gry są usuwane dopiero **po** zatwierdzeniu nowego; chunki, których używa
-inny rekord (inna gra, build, zależność), zostają (GC po referencjach).
+inny rekord (inna gra, build, zależność), zostają (GC po referencjach). W trakcie
+„Aktualizuj wszystko” GC działa raz, na końcu przebiegu, i sprawdza tylko chunki
+usuniętych rekordów (`deep_verify`: pełny przegląd katalogu `chunks/`, który
+usuwa też resztki przerwanych przebiegów).
+
+Gra, której bieżący build ma już rekord `complete` obejmujący potrzebny zakres,
+jest pomijana bez czytania manifestów i chunków (rekord zatwierdzono po pełnej
+weryfikacji). Brakujące lub uszkodzone chunki wykrywa wtedy instalacja (naprawa
+z CDN), „Stan archiwum” albo przebieg z `deep_verify`.
 
 ### Raport
 

@@ -7,6 +7,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 import webview
 import depot_archive as DA
+import file_state as FS
 
 
 def _base_dirs():
@@ -23,7 +24,7 @@ def _base_dirs():
     return app, res
 
 
-APP_VERSION = "1.5.0"      # see CHANGELOG.md
+APP_VERSION = "1.5.1"      # see CHANGELOG.md
 
 IS_WIN = os.name == "nt"
 # The user's platform as GOG's API names it — decides which offline installers
@@ -134,6 +135,10 @@ DEFAULT_SETTINGS: dict = {
     # changes nothing on disk until a download / "Update all" runs.
     "archive_mode": False,
     "archive_dir":  "",                  # "" = <installers dir>/_depots
+    # Full re-check on every update: re-hash every file, re-fetch bonus files
+    # without a GOG checksum, re-verify every archived chunk. OFF = trust what
+    # was already verified (remembered file state, committed archive records).
+    "deep_verify":  False,
     # Persisted directories ("" = use the built-in defaults above)
     "json_dir":    "",
     "install_dir": "",
@@ -870,35 +875,68 @@ def scan_downloaded_games() -> dict:
         for d in BASE.iterdir():
             if not d.is_dir() or d.name.startswith("_"):
                 continue
-            inst_files = []
-            for pat in INSTALLER_EXTS:
-                inst_files.extend(d.glob(pat))
-            inst_names = {f.name for f in inst_files}
-            inst_size  = sum(f.stat().st_size for f in inst_files if f.is_file())
-
-            # Extras: everything under extras/ (any extension), plus root files
-            # that aren't installers (covers the extras_subdir = False layout).
-            extra_files = []
-            extras_dir  = d / "extras"
-            if extras_dir.is_dir():
-                extra_files.extend(f for f in extras_dir.rglob("*") if f.is_file())
-            for f in d.iterdir():
-                if f.is_file() and f.name not in inst_names:
-                    extra_files.append(f)
-            extra_size = sum(f.stat().st_size for f in extra_files)
-
-            if inst_files or extra_files:
-                result[d.name.lower()] = {
-                    "path":          str(d),
-                    "files":         [f.name for f in sorted(inst_files)],
-                    "size":          inst_size,
-                    "extras_files":  sorted(f.name for f in extra_files),
-                    "extras_size":   extra_size,
-                    "has_installer": bool(inst_files),
-                }
+            info = _scan_download_dir(d)
+            if info:
+                result[d.name.lower()] = info
     except Exception as exc:
         log(f"scan_downloaded_games error: {exc}")
     return result
+
+
+def _scan_download_dir(d: Path) -> dict | None:
+    """One game folder of scan_downloaded_games (None = nothing downloaded)."""
+    inst_files = []
+    for pat in INSTALLER_EXTS:
+        inst_files.extend(d.glob(pat))
+    inst_names = {f.name for f in inst_files}
+    inst_size  = sum(f.stat().st_size for f in inst_files if f.is_file())
+
+    # Extras: everything under extras/ (any extension), plus root files
+    # that aren't installers (covers the extras_subdir = False layout).
+    extra_files = []
+    extras_dir  = d / "extras"
+    if extras_dir.is_dir():
+        extra_files.extend(f for f in extras_dir.rglob("*") if f.is_file())
+    for f in d.iterdir():
+        if f.is_file() and f.name not in inst_names:
+            extra_files.append(f)
+    extra_size = sum(f.stat().st_size for f in extra_files)
+
+    if not (inst_files or extra_files):
+        return None
+    return {
+        "path":          str(d),
+        "files":         [f.name for f in sorted(inst_files)],
+        "size":          inst_size,
+        "extras_files":  sorted(f.name for f in extra_files),
+        "extras_size":   extra_size,
+        "has_installer": bool(inst_files),
+    }
+
+
+def _downloaded_for_game(g: dict) -> dict:
+    """_check_downloaded_for_game(g, scan_downloaded_games()) for ONE game —
+    scans only that game's candidate folders, not every folder under BASE
+    (a full scan per game made 'Update all' quadratic in the library size)."""
+    names = {}
+    try:
+        if BASE.exists():
+            names = {d.name.lower(): d for d in BASE.iterdir()
+                     if d.is_dir() and not d.name.startswith("_")}
+    except Exception as exc:
+        log(f"_downloaded_for_game error: {exc}")
+    one = {}
+    for cand in _installer_candidates(g):
+        d = names.get(cand.lower())
+        if d is not None and cand.lower() not in one:
+            try:
+                info = _scan_download_dir(d)
+            except Exception as exc:
+                log(f"_downloaded_for_game {d}: {exc}")
+                info = None
+            if info:
+                one[cand.lower()] = info
+    return _check_downloaded_for_game(g, one)
 
 
 def scan_installed_games() -> dict:
@@ -2061,10 +2099,11 @@ def get_download_manifest(game_id) -> dict:
     # the account's owned list (best-effort; on failure show all as unknown/owned).
     owned_ids = None
     if prod.get("expanded_dlcs"):
-        try:
-            owned_ids = set(_get_owned_product_ids())
-        except Exception as exc:
-            log(f"owned list unavailable for DLC marking: {exc}")
+        # Cached account list (30 min): 'Update all' asks for every game, and
+        # a fresh account call per game was pure latency.
+        owned_ids = _owned_ids_cached()
+        if owned_ids is None:
+            log("owned list unavailable for DLC marking")
     man = _build_manifest(prod, owned_ids)
     man.update({"ok": True, "game_id": g["id"], "title": g["title"], "slug": g["slug"]})
     return man
@@ -2397,6 +2436,31 @@ def _remote_md5(checksum_url: str) -> str | None:
     except Exception:
         return None
     return _md5_from_checksum_xml(xml_text)
+
+
+def _deep_verify() -> bool:
+    return bool(get_settings().get("deep_verify"))
+
+
+def _file_state() -> "FS.FileState":
+    """Remembered size/mtime/MD5/CDN signature of downloaded files (BASE/_state;
+    the leading underscore keeps it out of the downloaded-games scan)."""
+    return FS.FileState(BASE / "_state" / "file_state.json", BASE)
+
+
+def _head_signature(cdn_url: str) -> dict | None:
+    """What the CDN says about a file without downloading it (HEAD): ETag,
+    Last-Modified, length, file name. None when the server gives no usable answer."""
+    try:
+        req = urllib.request.Request(cdn_url, method="HEAD", headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            h = resp.headers
+            sig = {"etag": h.get("ETag") or "", "last_modified": h.get("Last-Modified") or "",
+                   "length": h.get("Content-Length") or "", "name": _filename_from_url(cdn_url)}
+    except Exception as exc:
+        log(f"HEAD {_filename_from_url(cdn_url)}: {exc}")
+        return None
+    return sig if (sig["etag"] or sig["last_modified"]) else None
 
 
 def _md5_path(p: Path) -> str:
@@ -3619,6 +3683,11 @@ def _archive() -> DA.DepotArchive:
     return DA.DepotArchive(_archive_root())
 
 
+def _verify_workers() -> int:
+    """Parallel chunk checks: MD5 + inflate are CPU-bound and release the GIL."""
+    return max(1, min(8, os.cpu_count() or 1))
+
+
 def _mig_event(pid, stage: str, **info) -> None:
     """One migration stage → UI (+ test trace). Stages per game, in order:
     start, inventory, plan, manifests, download, verify, committed, cleanup,
@@ -3748,6 +3817,19 @@ def _archive_build(g: dict, pid: str, build: dict, meta: dict, plan: dict, box: 
     build_id = str(build.get("build_id") or meta.get("buildId") or "")
     if not build_id:
         raise RuntimeError("build bez identyfikatora")
+    deep = _deep_verify()
+    # Chunks of this product's COMPLETE records were fully verified when those
+    # records were committed, and chunk files are content-addressed (immutable):
+    # a new build re-verifies only what is new, not the whole game again.
+    # Read before this build's record is overwritten as "incomplete" below.
+    trusted = set()
+    if not deep:
+        for r in arc.list_records(pid):
+            if r.get("state") == DA.STATE_COMPLETE:
+                try:
+                    trusted |= {(c.get("compressedMd5") or "").lower() for c in arc.record_chunks(r)}
+                except DA.ArchiveError as exc:
+                    log(f"trusted chunks {pid}/{r.get('build_id')}: {exc}")
     arc.put_meta(pid, build_id, meta)
 
     _mig_event(pid, "manifests")
@@ -3816,6 +3898,7 @@ def _archive_build(g: dict, pid: str, build: dict, meta: dict, plan: dict, box: 
             owner.setdefault((c.get("compressedMd5") or "").lower(), "__dep__")
 
     _mig_event(pid, "download", bytes=need, chunks=len(missing))
+    fresh = set()                              # downloaded + checked in memory this run
     if missing:
         _push_log(f"Archiwizuję: {len(missing)} chunków, {_human(need)} do pobrania.")
         links, llock = {}, threading.Lock()
@@ -3838,9 +3921,13 @@ def _archive_build(g: dict, pid: str, build: dict, meta: dict, plan: dict, box: 
             md5 = (c.get("compressedMd5") or "").lower()
             try:
                 data = _fetch_chunk_raw(link_for(owner.get(md5, pid)), md5)
-                arc.put_chunk(md5, data)
+                # Full check while the bytes are still in memory (compressed
+                # MD5, inflate, plain MD5) — no re-read of the file afterwards.
+                DA.check_chunk_bytes(md5, data, c.get("md5"))
+                arc.put_chunk(md5, data, verified=True)
                 with glock:
                     got["n"] += len(data)
+                    fresh.add(md5)
                 hub.progress(1, got["n"])
             except Exception as exc:
                 errs.append((md5, exc))
@@ -3855,9 +3942,15 @@ def _archive_build(g: dict, pid: str, build: dict, meta: dict, plan: dict, box: 
             raise RuntimeError(f"pobieranie chunków: {len(errs)} błędów, np. "
                                f"{errs[0][0][:12]}…: {errs[0][1]}")
 
-    _mig_event(pid, "verify", chunks=len(uniq))
-    _push_log(f"Weryfikuję archiwum ({len(uniq)} chunków, {_human(rec['compressed_size'])})…")
-    res = arc.verify_chunks(list(uniq.values()), cancel=_cancel.is_set)
+    # Re-read only chunks nobody has verified yet: present from an aborted
+    # run, or shared with another product's record. deep_verify = everything.
+    to_check = [c for m, c in uniq.items() if deep or (m not in fresh and m not in trusted)]
+    _mig_event(pid, "verify", chunks=len(to_check))
+    skipped = len(uniq) - len(to_check)
+    _push_log(f"Weryfikuję archiwum ({len(to_check)} chunków, "
+              f"{_human(sum(int(c.get('compressedSize') or 0) for c in to_check))})"
+              + (f" — {skipped} już zweryfikowanych pomijam" if skipped else "") + "…")
+    res = arc.verify_chunks(to_check, cancel=_cancel.is_set, workers=_verify_workers())
     if res["missing"] or res["corrupt"]:
         for m in res["corrupt"]:           # drop bad copies → the next run refetches them
             try:
@@ -3873,6 +3966,25 @@ def _archive_build(g: dict, pid: str, build: dict, meta: dict, plan: dict, box: 
     return rec
 
 
+# pid → Future[(build, meta)] while 'Update all' runs: the next games' build
+# lookups run in the background while the current game downloads (read-only
+# network calls — the per-game order of archive/verify/cleanup is unchanged).
+_BUILD_PREFETCH: dict | None = None
+_PREFETCH_AHEAD = 4
+
+
+def _fetch_build_and_meta(pid: str) -> tuple:
+    build = _pick_build(pid)
+    return build, _cs_get_zlib(build["link"])
+
+
+def _build_and_meta(pid: str) -> tuple:
+    fu = _BUILD_PREFETCH.pop(str(pid), None) if _BUILD_PREFETCH is not None else None
+    if fu is not None:
+        return fu.result()
+    return _fetch_build_and_meta(pid)
+
+
 def _archive_scope(g: dict, langs, dlcs, box: dict) -> tuple:
     """Archive the current GOG build of `g` for languages/DLC (merged with what
     an earlier record of the same build already holds — scope never shrinks).
@@ -3880,8 +3992,7 @@ def _archive_scope(g: dict, langs, dlcs, box: dict) -> tuple:
     pid = str(g["product"].get("id") or g["id"])
     _mig_event(pid, "plan")
     try:
-        build = _pick_build(pid)
-        meta = _cs_get_zlib(build["link"])
+        build, meta = _build_and_meta(pid)
     except Exception as exc:
         raise _GameSkip(f"brak obsługiwanego buildu Galaxy (generation 2, {_MY_OS}): {exc}")
     build_id = str(build.get("build_id") or meta.get("buildId") or "")
@@ -3907,7 +4018,10 @@ def _archive_scope(g: dict, langs, dlcs, box: dict) -> tuple:
         _push_log(f"⚠ DLC {did}: {why}.")
     if existing and existing.get("state") == DA.STATE_COMPLETE:
         ok, _ = DA.record_scope_covers(existing, plan["langs"], plan["dlcs"] + plan["dlc_meta_only"])
-        if ok and not arc.missing_chunks(arc.record_chunks(existing)):
+        # A committed record of the current build was fully verified when it
+        # was committed: trust it instead of re-reading every manifest and
+        # stat-ing every chunk on each run. deep_verify keeps the presence check.
+        if ok and (not _deep_verify() or not arc.missing_chunks(arc.record_chunks(existing))):
             plan["added_bytes"] = 0
             return existing, plan, build, meta, False
     rec = _archive_build(g, pid, build, meta, plan, box)
@@ -4058,10 +4172,30 @@ def _prune_old_builds(arc, pid: str, keep_build: str) -> None:
     old = [r for r in arc.list_records(pid) if str(r.get("build_id")) != str(keep_build)]
     if not old:
         return
+    cands, full = set(), _deep_verify()
     for r in old:
+        try:
+            cands |= {(c.get("compressedMd5") or "").lower() for c in arc.record_chunks(r)}
+        except DA.ArchiveError as exc:
+            log(f"gc candidates {pid}/{r.get('build_id')}: {exc} — pełne sprzątanie")
+            full = True
         arc.remove_record(pid, str(r["build_id"]))
+    if _GC_BATCH is not None:
+        # Inside 'Update all': one sweep at the end of the run, not one walk
+        # over every record of the archive per updated game.
+        _GC_BATCH["cands"] |= cands
+        _GC_BATCH["full"] = _GC_BATCH["full"] or full
+        return
+    _archive_gc(arc, None if full else cands)
+
+
+# Collects GC work during one 'Update all' run (None = collect nothing, sweep now).
+_GC_BATCH: dict | None = None
+
+
+def _archive_gc(arc, candidates) -> None:
     try:
-        n, b = arc.gc()
+        n, b = arc.gc(candidates)
         if n:
             _push_log(f"Archiwum: usunięto {n} nieużywanych chunków starszych buildów ({_human(b)}).")
     except Exception as exc:
@@ -4101,7 +4235,7 @@ def _migrate_game(g: dict, index: int = 1, total: int = 1) -> dict:
         return res
 
     _mig_event(pid, "inventory")
-    dl = _check_downloaded_for_game(g, scan_downloaded_games())
+    dl = _downloaded_for_game(g)
     folder = Path(dl["installer_path"]) if dl["downloaded"] else None
     box = _access_token_box()
     if not box.get("access"):
@@ -4220,7 +4354,29 @@ def _archive_all_worker(only_ids=None) -> bool:
 
     _push_log(f"── Aktualizacja wszystkich (archiwum depotów): {len(targets)} gier — "
               "po jednej, sprzątanie przed następną ──")
+    global _GC_BATCH, _BUILD_PREFETCH
+    _GC_BATCH = {"cands": set(), "full": False}
+    _BUILD_PREFETCH = {}
+    pre = ThreadPoolExecutor(max_workers=2)
+    try:
+        _archive_all_loop(arc, targets, pid_of, pend, report, pre)
+    finally:
+        pre.shutdown(wait=False, cancel_futures=True)
+        _BUILD_PREFETCH = None
+        batch, _GC_BATCH = _GC_BATCH, None
+        if batch["full"] or batch["cands"]:
+            _archive_gc(arc, None if batch["full"] else batch["cands"])
+
+    _emit_archive_report(report)
+    return not report["errors"] and not report["paused"]
+
+
+def _archive_all_loop(arc, targets: list, pid_of, pend: set, report: dict, pre) -> None:
     for i, g in enumerate(targets, 1):
+        for nxt in targets[i - 1:i - 1 + _PREFETCH_AHEAD]:
+            p = pid_of(nxt)
+            if p not in pend and _BUILD_PREFETCH is not None and p not in _BUILD_PREFETCH:
+                _BUILD_PREFETCH[p] = pre.submit(_fetch_build_and_meta, p)
         if _cancel.is_set():
             _push_log("⚠ Przerwano — pozostałe gry pominięte.")
             break
@@ -4261,7 +4417,7 @@ def _archive_all_worker(only_ids=None) -> bool:
             for k in r["kept"]:
                 report["kept"].append({"title": r["title"], **k})
         # Extras stay classic files — refresh them (never touches installers).
-        dl = _check_downloaded_for_game(g, scan_downloaded_games())
+        dl = _downloaded_for_game(g)
         ex_dir = Path(dl["installer_path"]) / "extras" if dl.get("installer_path") else None
         has_extras = (any(ex_dir.iterdir()) if ex_dir is not None and ex_dir.is_dir() else False)             if get_settings().get("extras_subdir", True) else bool(dl.get("extras_files"))
         if has_extras and not _cancel.is_set():
@@ -4269,9 +4425,6 @@ def _archive_all_worker(only_ids=None) -> bool:
                 _update_worker(g["id"], extras_only=True)
             except Exception as exc:
                 _push_log(f"⚠ Extras {g['title']}: {exc}")
-
-    _emit_archive_report(report)
-    return not report["errors"] and not report["paused"]
 
 
 def _emit_archive_report(report: dict) -> None:
@@ -4431,7 +4584,7 @@ def check_archive_install(game_id, build_id=None, langs=None, dlcs=None, deep=Fa
     missing = arc.missing_chunks(chunks)
     corrupt = []
     if deep:
-        res = arc.verify_chunks(chunks, cancel=_cancel.is_set)
+        res = arc.verify_chunks(chunks, cancel=_cancel.is_set, workers=_verify_workers())
         absent = {(c.get("compressedMd5") or "").lower() for c in missing}
         corrupt = [m for m in res["corrupt"] if m not in absent]
     return {"ok": True, "build_id": rec["build_id"], "state": rec.get("state"),
@@ -4706,7 +4859,8 @@ def _archive_repair_worker(game_id, build_id=None, langs=None, dlcs=None) -> boo
     langs = list(scope.get("languages") or []) + [_norm_lang(l) for l in (langs or [])]
     dl = set(scope.get("dlcs") or []) | {str(d) for d in (dlcs or [])}
     try:
-        res = arc.verify_chunks(arc.record_chunks(rec), cancel=_cancel.is_set)
+        res = arc.verify_chunks(arc.record_chunks(rec), cancel=_cancel.is_set,
+                                workers=_verify_workers())
         for m in res["corrupt"]:
             arc.chunk_path(m).unlink()
         if res["corrupt"]:
@@ -4881,7 +5035,7 @@ def _update_worker(game_id, extras_only: bool = False) -> bool:
     # Only refresh the *kinds* of files the game actually has: if it only ever
     # had its extras downloaded (no installer on disk), update just the extras —
     # never pull a whole installer the user never downloaded.
-    dl_info = _check_downloaded_for_game(g, scan_downloaded_games())
+    dl_info = _downloaded_for_game(g)
     has_installer = dl_info.get("has_installer", False) and not extras_only
 
     man = get_download_manifest(game_id)
@@ -4906,6 +5060,19 @@ def _update_worker(game_id, extras_only: bool = False) -> bool:
     #    • file WITHOUT a checksum (most bonus content) ⇒ fetch to RAM and
     #      compare bytes with the on-disk copy, replacing only if different.
     _push_log(f"Sprawdzam aktualne wersje w GOG (języki: {', '.join(langs)})…")
+    fstate = _file_state()
+    try:
+        return _update_worker_body(g, rows, has_installer, extras_only, dest_dir, extras_dir, fstate)
+    finally:
+        try:
+            fstate.forget_missing(dest_dir)
+            fstate.save()
+        except Exception as exc:
+            log(f"file state save: {exc}")
+
+
+def _update_worker_body(g, rows, has_installer, extras_only, dest_dir, extras_dir, fstate) -> bool:
+    deep = _deep_verify()
     box = _access_token_box()
     expected: dict = {}     # (dir_str, filename) -> row  (files we should keep)
     to_fetch: list = []     # checksummed files that need a (re)download
@@ -4943,7 +5110,13 @@ def _update_worker(game_id, extras_only: bool = False) -> bool:
                 same = False
                 if dest.exists():
                     try:
-                        same = (_md5_path(dest).lower() == remote.lower())
+                        # Remembered MD5 of an unchanged file (same size + mtime)
+                        # instead of re-hashing gigabytes on every update.
+                        local = None if deep else fstate.md5(dest)
+                        if local is None:
+                            local = _md5_path(dest)
+                            fstate.put(dest, local)
+                        same = (local.lower() == remote.lower())
                     except Exception as exc:
                         log(f"update md5 {fname}: {exc}")
                 if not same:
@@ -5012,7 +5185,7 @@ def _update_worker(game_id, extras_only: bool = False) -> bool:
         _push_log(f"Weryfikuję {len(ram_targets)} plik(ów) bez sumy GOG "
                   "(pobieram do RAM i porównuję treść)…")
         hub = _ProgressHub(0)
-        same_n = repl_n = 0
+        same_n = repl_n = known_n = 0
         for idx, (dl_endpoint, dest, name) in enumerate(ram_targets, 1):
             if _cancel.is_set():
                 _push_log("⚠ Przerwano — sprzątanie POMINIĘTE.")
@@ -5021,12 +5194,21 @@ def _update_worker(game_id, extras_only: bool = False) -> bool:
                 cdn    = _resolve_downlink(dl_endpoint, box).get("downlink")
                 if not cdn:
                     raise RuntimeError("brak downlink")
+                # Already confirmed identical to the same CDN object (ETag /
+                # Last-Modified / length) and untouched on disk since: skip
+                # the whole-file download.
+                sig = _head_signature(cdn) if dest.exists() else None
+                if not deep and fstate.remote_unchanged(dest, sig):
+                    same_n += 1
+                    known_n += 1
+                    continue
                 data   = _fetch_to_ram(cdn, hub, sid=idx, name=dest.name)
                 hub.finish(idx, True)
                 dl_md5 = _md5_bytes(data)
+                local = None if deep else fstate.md5(dest)
                 identical = (dest.exists()
                              and dest.stat().st_size == len(data)
-                             and _md5_path(dest).lower() == dl_md5.lower())
+                             and (local or _md5_path(dest)).lower() == dl_md5.lower())
                 if identical:
                     same_n += 1                       # discard the download
                 else:
@@ -5036,12 +5218,15 @@ def _update_worker(game_id, extras_only: bool = False) -> bool:
                     tmp.replace(dest)                 # atomic overwrite
                     repl_n += 1
                     _push_log(f"↻ Zmieniony/nowy: {dest.name} ({_human(len(data))})")
+                fstate.put(dest, dl_md5, sig)
                 del data
             except Exception as exc:
                 hub.finish(idx, False)
                 ram_bad += 1
                 _push_log(f"✗ Błąd (RAM) przy {name}: {exc}")
-        _push_log(f"Weryfikacja treści: {same_n} bez zmian, {repl_n} zastąpionych/nowych"
+        _push_log(f"Weryfikacja treści: {same_n} bez zmian"
+                  + (f" (w tym {known_n} potwierdzonych bez pobierania)" if known_n else "")
+                  + f", {repl_n} zastąpionych/nowych"
                   + (f", {ram_bad} z problemem" if ram_bad else "") + ".")
 
     if not to_fetch and not ram_targets:

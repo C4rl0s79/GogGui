@@ -4,7 +4,7 @@
 # Build:  pyinstaller GOGManager.spec --noconfirm
 #
 # Layout expected next to this .spec:
-#   app.py, depot_archive.py
+#   app.py, depot_archive.py, file_state.py
 #   assets/index.html
 #
 # Requires (pip):  pywebview  pythonnet  cryptography  zstandard
@@ -34,6 +34,7 @@ hiddenimports += [
     'compression.zstd',         # Python 3.14 stdlib zstd (imported dynamically)
     'zstandard',                # 3rd-party zstd fallback (if installed)
     'depot_archive',            # local depot archive module (next to app.py)
+    'file_state',               # remembered file state for fast updates (next to app.py)
 ]
 # pythonnet is optional at analysis time; collect it if present.
 try:
