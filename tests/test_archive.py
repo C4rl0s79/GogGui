@@ -254,6 +254,39 @@ class Inventory(ArchiveTestBase):
 
 
 class Migration(ArchiveTestBase):
+    def _listed_on_gog(self, i=-1, os_name=None):
+        """The library product lists an installer (GOG `expand=downloads`) — as for a game bought after the last
+        run, of which nothing is on disk yet."""
+        self.w.games[i]["product"]["downloads"] = {"installers": [{"os": os_name or app._MY_OS}]}
+
+    def test_update_all_archives_game_never_downloaded(self):
+        self.w.add_game("100", "alpha")
+        self.assertTrue(app._archive_all_worker())
+        self.w.add_game("300", "gamma", installers=False)      # new on the account: no installers, no record
+        self._listed_on_gog()
+        self.assertTrue(app._archive_all_worker())
+        rec = self.arc().read_record("300", "B1")
+        self.assertEqual(rec["state"], DA.STATE_COMPLETE)
+        self.assertEqual((rec["scope"]["languages"], rec["scope"]["dlcs"]), (["en", "pl"], ["3001", "3002"]))
+        self.assertTrue((self.folder("gamma") / "extras" / "manual.pdf").exists())
+        rep = [m for m in self.sent if m.get("type") == "migration_report"][-1]["report"]
+        self.assertEqual([x["title"] for x in rep["updated"]], ["Gamma"])
+
+    def test_update_one_game_archives_game_never_downloaded(self):
+        self.w.add_game("300", "gamma", installers=False)
+        self._listed_on_gog()
+        self.assertTrue(app._archive_all_worker(only_ids={"300"}))
+        self.assertEqual(self.arc().read_record("300", "B1")["state"], DA.STATE_COMPLETE)
+
+    def test_update_all_leaves_out_entries_without_installer(self):
+        self.w.add_game("300", "gamma", installers=False)       # goodies-only: GOG lists no installer
+        self.w.add_game("400", "delta", installers=False)
+        self._listed_on_gog(os_name="mac")                     # installer only for another OS
+        self.assertTrue(app._archive_all_worker())
+        self.assertIsNone(self.arc().read_record("300", "B1"))
+        self.assertIsNone(self.arc().read_record("400", "B1"))
+        self.assertEqual(self.fetched, [])                     # nothing downloaded
+
     def test_migration_without_version_change(self):
         self.w.add_game("100", "alpha")
         self.assertTrue(app._archive_all_worker())

@@ -6,6 +6,19 @@ wersjonowanie wg [SemVer](https://semver.org/lang/pl/).
 
 ## [Unreleased]
 
+## [1.6.1] - 2026-11-11
+
+### Poprawiono
+- **„Aktualizuj wszystko” w trybie archiwum obejmuje też gry jeszcze niepobrane** — także te, które pojawiły
+  się na koncie po ostatniej synchronizacji biblioteki (np. „NEW” na GOG). Regresja z 1.5.0: taka gra była
+  w kolejce, ale tryb archiwum kończył ją jako „brak instalatorów do migracji (tylko extras)” i niczego nie
+  pobierał, więc nie trafiała do archiwum, a serwer EmuStart i Lumen jej nie widziały (w bibliotece było 57 takich
+  gier, m.in. wydania 30th Anniversary serii Wing Commander, Doom, Dungeon Siege, Vampire). Teraz gra, dla której GOG ma
+  instalator dla tego systemu, jest archiwizowana w całości (wszystkie języki buildu i posiadane DLC), tak samo
+  jak przy migracji z instalatorów. Pozycje bez instalatora (goodies, soundtracki) pomijane jak dotąd.
+  Ten sam warunek dotyczy przycisku „Aktualizuj” jednej gry.
+- Bez zmian: tryb bez archiwum (aktualizacja instalatorów offline), sprzątanie instalatorów, weryfikacja.
+
 ## [1.6.0] - 2026-11-10
 
 ### Dodano
