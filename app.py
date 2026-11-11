@@ -24,7 +24,7 @@ def _base_dirs():
     return app, res
 
 
-APP_VERSION = "1.6.0"      # see CHANGELOG.md
+APP_VERSION = "1.6.1"      # see CHANGELOG.md
 
 IS_WIN = os.name == "nt"
 # The user's platform as GOG's API names it — decides which offline installers
@@ -4424,6 +4424,13 @@ def _installer_rows_for_migration(man: dict) -> list:
     return rows
 
 
+def _has_os_installer(g: dict) -> bool:
+    """GOG lists an installer of this game for this OS (library product, `expand=downloads`) — the game has
+    something to archive even when nothing of it is on disk yet. Goodies-only entries have none."""
+    inst = ((g.get("product") or {}).get("downloads") or {}).get("installers") or []
+    return any((r.get("os") or "").lower() == _MY_OS for r in inst if isinstance(r, dict))
+
+
 def _size_matches(disk: int, api: int) -> bool:
     """The GOG products API reports installer file sizes ROUNDED to whole MiB
     (e.g. 1068498944 = 1019 MiB for a 1069242312-byte file), so an exact
@@ -4647,9 +4654,11 @@ def _migrate_game(g: dict, index: int = 1, total: int = 1) -> dict:
         if inv["files"]:
             raise _GameSkip("nie rozpoznano żadnego instalatora tej gry "
                             "(pliki zostają: " + ", ".join(e["name"] for e in inv["files"][:4]) + ")")
-        res["reason"] = "brak instalatorów do migracji (tylko extras)"
-        _mig_event(pid, "done", result="unchanged")
-        return res
+        if not _has_os_installer(g):
+            res["reason"] = "brak instalatorów do migracji (tylko extras)"
+            _mig_event(pid, "done", result="unchanged")
+            return res
+        _push_log("Gry nie ma jeszcze w archiwum — archiwizuję cały bieżący build z GOG.")
 
     st_langs = [_inst_lang(x) for x in (get_settings().get("update_langs") or ["en"])]
     disk_langs = sorted({l for e in assigned for l in e.get("langs") or []})
@@ -4728,10 +4737,12 @@ def _archive_all_worker(only_ids=None) -> bool:
         rec_pids = {str(r.get("product_id")) for r in arc.list_records()}
         pend = {str(j.get("product_id")) for j in arc.pending_cleanups()}
     pid_of = lambda g: str(g["product"].get("id") or g["id"])
+    # every game of the library: downloaded, archived, or not fetched at all yet (e.g. bought after the last
+    # run) — the last only when GOG has an installer for this OS (goodies-only entries have nothing to archive)
     targets = [g for g in scan_games()
                if (only_ids is None or g["id"] in only_ids)
                and (_check_downloaded_for_game(g, downloaded)["downloaded"]
-                    or pid_of(g) in rec_pids or pid_of(g) in pend)]
+                    or pid_of(g) in rec_pids or pid_of(g) in pend or _has_os_installer(g))]
     targets.sort(key=lambda g: 0 if pid_of(g) in pend else 1)     # finish pending cleanups first
     report = {"migrated": [], "updated": [], "unchanged": [], "skipped": [], "errors": [],
               "kept": [], "paused": None, "deleted_bytes": 0, "added_bytes": 0, "total": len(targets)}
