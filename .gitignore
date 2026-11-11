@@ -1,0 +1,24 @@
+# Stan aplikacji / cache tworzone przy uruchomieniu
+_gog_cache/
+GOGinstall/
+settings.json
+*.log
+
+# Pobrane instalatory / archiwa
+*.zip
+
+# PyInstaller
+build/
+dist/
+*.manifest
+
+# Python
+__pycache__/
+*.py[cod]
+
+# Śmieci
+*.bak
+Thumbs.db
+
+# Graphify context folder
+graphify-out/

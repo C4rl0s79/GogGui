@@ -1,0 +1,11 @@
+# Zależności GOG Library Managera na Linuksie (instaluje install.sh do .venv).
+
+pywebview>=5.0     # okno aplikacji (backend GTK z systemu albo Qt przez --qt)
+zstandard>=0.22    # kompresja library.pak (bez tego fallback na lzma — wolniej)
+
+# Świadomie POMINIĘTE:
+# - PyGObject — pywebview w wariancie GTK bierze je z pakietów systemowych
+#   (python3-gi + gir1.2-webkit2), dlatego venv powstaje z
+#   --system-site-packages. Kompilacja PyGObject z pipa wymaga nagłówków
+#   cairo/girepository i regularnie się wywraca.
+# - cryptography — używane wyłącznie w windowsowej ścieżce TPM+AES.
