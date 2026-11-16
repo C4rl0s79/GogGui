@@ -6,6 +6,24 @@ wersjonowanie wg [SemVer](https://semver.org/lang/pl/).
 
 ## [Unreleased]
 
+### Plan: aktualizowanie archiwum depotów od nowa (ustalenia z użytkownikiem 2026-11-16)
+
+Cel: „Aktualizuj wszystko” liczy stan każdej gry z konta GOG, pokazuje plan przed pobieraniem i pobiera tylko to,
+co się zmieniło. Wszystkie gry są już zmigrowane do depotów: aktualizacja nie pobiera ani nie usuwa instalatorów, nie
+pobiera łatek (na `Z:\GOG` nie ma folderów ani plików `patches` — sprawdzone 2026-11-16).
+Nie dotyka: formatu archiwum (`goggui-depot-archive v1`: rekordy, manifesty v2, chunki), instalacji z archiwum,
+odczytu archiwum przez serwer EmuStart i Lumena.
+
+| Etap | Zakres | Stan |
+|---|---|---|
+| A | **Stan gier z konta GOG** (lista posiadanych, nie foldery na dysku): każda gra ma jeden stan z powodem — w archiwum i aktualna / nowa / nowszy build / do naprawy / pominięta (brak buildu Windows, tylko goodies, błąd — z treścią). Zapis w `_depots/status.json` (opisany format), żeby serwer EmuStart i GOG Manager pokazywały te same liczby | do zrobienia |
+| B | **Plan aktualizacji przed pobieraniem** (tylko zapytania o buildy i nagłówki, bez danych): różnica manifestów starego i nowego buildu na poziomie plików (dodane / zmienione / usunięte, bajty) i rozmiar nowych chunków; podsumowanie „N nowych, M aktualizacji (X GB), K do naprawy, P pominiętych”. Pobierane są tylko brakujące chunki (niezmienione pliki i ich fragmenty mają te same chunki — już dziś) | do zrobienia |
+| C | **Pominięte z datą ponownego sprawdzenia** (7 dni) zamiast zapytania o build przy każdym przebiegu | do zrobienia |
+| D | **4–8 równoczesnych pobrań** (ustalenie od początku projektu): pula połączeń wspólna dla kilku gier naraz (pobieranie kolejnej gry, gdy poprzednia się weryfikuje); zatwierdzenie i weryfikacja nadal atomowe dla każdej gry | do zrobienia |
+| E | **Bez instalatorów w aktualizacji**: „Aktualizuj wszystko” w trybie archiwum nie pobiera instalatorów ani łatek i nie migruje — zostają depoty i extras (bez łatek) | do zrobienia |
+| F | **Gry v1 (main.bin): tylko zmienione pliki** — pliki z tym samym MD5 co w poprzednim przerobionym manifeście biorą jego chunki, pobierane są tylko nowe i zmienione | do zrobienia |
+| G | **„Napraw” dla każdej gry z głównej listy** (dziś tylko w oknie instalacji z archiwum); lista „do naprawy” także z raportu serwera EmuStart (etap 12 w `EmustartNXT/emustart/CHANGELOG.md` — sprawdzanie archiwum w tle robi serwer, bo działa stale) | do zrobienia |
+
 ## [1.6.1] - 2026-11-11
 
 ### Poprawiono
