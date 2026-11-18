@@ -1247,7 +1247,8 @@ main { height: 100%; overflow: hidden; display: flex; flex-direction: column; mi
       <div class="dl-foot">
         <div class="plan-note" data-i18n="plan.allNote">Sprawdzanie nie pobiera chunków i nie uruchamia aktualizacji.</div>
         <div style="display:flex; gap:8px">
-          <button class="btn primary" id="planAllStart" onclick="startPlanAll()" data-i18n="plan.allStart">▶ Sprawdź wszystkie gry</button>
+          <button class="btn primary" id="planAllExec" onclick="executePlanAll()" disabled>▶ Wykonaj plan</button>
+          <button class="btn" id="planAllStart" onclick="startPlanAll()" data-i18n="plan.allStart">▶ Sprawdź wszystkie gry</button>
           <button class="btn btn-xs stop" id="planAllStop" style="display:none" onclick="call('cancel_plan_all')" data-i18n="plan.allStop">■ Przerwij</button>
           <button class="btn" onclick="closePlanAll()" data-i18n="plan.close">Zamknij</button>
         </div>
@@ -1363,7 +1364,9 @@ const I18N = {
     'plan.f.errors':'tylko błędy','plan.f.ambiguous':'tylko ambiguous','plan.f.skipped':'tylko pominięte',
     'plan.allNote':'Sprawdzanie nie pobiera chunków i nie uruchamia aktualizacji.','plan.allStart':'▶ Sprawdź wszystkie gry',
     'plan.allStop':'■ Przerwij','plan.noSaved':'Brak zapisanego planu — kliknij „Sprawdź ponownie”.',
-    'plan.running':'Sprawdzanie już trwa.',
+    'plan.running':'Sprawdzanie już trwa.','plan.exec':'▶ Wykonaj plan ({n})',
+    'plan.execConfirm':'Wykonać plan dla {n} gier (aktualizacja, pierwsze pobranie lub uzupełnienie archiwum)?\n\nPobrane zostaną tylko brakujące dane z planu — bez ponownego skanowania biblioteki. Postęp i wynik w panelu aktywności.',
+    'plan.execQueued':'Plan dodany do kolejki: {n} gier.','plan.execSkipped':'Pominięto {n} (aktualne, błędy, v1, nieaktualne plany — szczegóły w raporcie).',
     'tb.notLoggedIn':'Nie zalogowano','tb.loggedIn':'Zalogowano',
     'filter.all':'Wszystkie','filter.installed':'Zainstalowane','filter.downloaded':'Pobrane',
     'sort.title':'Alfabetycznie','sort.size':'Rozmiar (pobrane)','sort.year':'Rok wydania','sort.release':'Data wydania','sort.rating':'Ocena GOG','sort.purchase':'Data zakupu','sort.status':'Status',
@@ -1386,6 +1389,7 @@ const I18N = {
     'act.done':'Pobrane pliki','act.completed':'✓ Zakończono','act.remaining':'Pozostało',
     'act.eta':'ETA','act.speedNa':'—',
     'status.installed':'✓ Zainstalowana','status.downloaded':'⬇ Pobrano','status.notDownloaded':'Nie pobrana',
+    'status.inArchive':'📦 W archiwum (depot)',
     'btn.launch':'▶ Uruchom','btn.runInstaller':'▶ Uruchom instalator','btn.deleteInstaller':'🗑 Usuń installer','btn.deleteGame':'🗑 Usuń grę',
     'btn.openInstaller':'📂 Folder instalatora','btn.openGame':'📂 Folder gry',
     'btn.reDownload':'↻ Pobierz ponownie','btn.download':'⬇ Pobierz installer',
@@ -1454,7 +1458,9 @@ const I18N = {
     'plan.f.errors':'errors only','plan.f.ambiguous':'ambiguous only','plan.f.skipped':'skipped only',
     'plan.allNote':'Checking downloads no chunks and starts no update.','plan.allStart':'▶ Check every game',
     'plan.allStop':'■ Stop','plan.noSaved':'No saved plan — click “Check again”.',
-    'plan.running':'A check is already running.',
+    'plan.running':'A check is already running.','plan.exec':'▶ Execute plan ({n})',
+    'plan.execConfirm':'Execute the plan for {n} games (update, first download or completing the archive)?\n\nOnly the missing data in the plan is downloaded — no library rescan. Progress and result in the activity panel.',
+    'plan.execQueued':'Plan queued: {n} games.','plan.execSkipped':'Skipped {n} (up to date, errors, v1, stale plans — see the report).',
     'tb.notLoggedIn':'Not logged in','tb.loggedIn':'Logged in',
     'filter.all':'All','filter.installed':'Installed','filter.downloaded':'Downloaded',
     'sort.title':'Alphabetical','sort.size':'Size (downloaded)','sort.year':'Release year','sort.release':'Release date','sort.rating':'GOG rating','sort.purchase':'Purchase date','sort.status':'Status',
@@ -1477,6 +1483,7 @@ const I18N = {
     'act.done':'Completed files','act.completed':'✓ Done','act.remaining':'Remaining',
     'act.eta':'ETA','act.speedNa':'—',
     'status.installed':'✓ Installed','status.downloaded':'⬇ Downloaded','status.notDownloaded':'Not downloaded',
+    'status.inArchive':'📦 In archive (depot)',
     'btn.launch':'▶ Launch','btn.runInstaller':'▶ Run installer','btn.deleteInstaller':'🗑 Delete installer','btn.deleteGame':'🗑 Delete game',
     'btn.openInstaller':'📂 Installer folder','btn.openGame':'📂 Game folder',
     'btn.reDownload':'↻ Re-download','btn.download':'⬇ Download installer',
@@ -1628,6 +1635,10 @@ window.handleActivity = function(msg) {
     onPlanAllEvent(msg);
   } else if (msg.type === 'migration_report') {
     renderMigrationReport(msg.report || {});
+    if (_planAll.executing) {                             // refresh an open plan window: executed plans are stale
+      _planAll.executing = false;
+      if (document.getElementById('planAllModal').style.display !== 'none') openPlanAll();
+    }
   }
 };
 
@@ -2182,7 +2193,8 @@ function renderPalette(q) {
   q = (q || '').toLowerCase();
   const gs = games.filter(g => g.title.toLowerCase().includes(q)).slice(0, 8)
     .map(g => ({ kind: 'game', icon: g.icon, label: g.title,
-                 sub: g.installed ? t('status.installed') : g.downloaded ? t('status.downloaded') : t('status.notDownloaded'),
+                 sub: g.installed ? t('status.installed') : g.downloaded ? t('status.downloaded')
+                    : g.list_status === 'archived' ? t('status.inArchive') : t('status.notDownloaded'),
                  run: () => { sel = g.id; renderList(); renderMain(); closePalette(); } }));
   const acts = _paletteActions().filter(a => a.label.toLowerCase().includes(q));
   _palItems = [...gs, ...acts]; _palActive = 0;
@@ -2513,7 +2525,8 @@ function _filteredGames() {
   if (filterMode === 'installed')  arr = arr.filter(g => g.installed);
   // "Downloaded" = has a downloaded installer/extras, independent of whether the
   // game is also physically installed (GOGinstall vs GOG_Games are separate).
-  if (filterMode === 'downloaded') arr = arr.filter(g => g.downloaded);
+  // A complete depot archive counts too (migrated games have no installer left, only the archive).
+  if (filterMode === 'downloaded') arr = arr.filter(g => g.downloaded || g.list_status === 'archived');
   const byTitle = (a, b) => a.title.localeCompare(b.title);
   arr.sort((a, b) => {
     if (sortMode === 'size')    return _dlSize(b) - _dlSize(a) || byTitle(a, b);
@@ -2521,7 +2534,8 @@ function _filteredGames() {
     if (sortMode === 'rating')  return _rating(b) - _rating(a) || byTitle(a, b);
     if (sortMode === 'purchase') return _purch(a) - _purch(b)  || byTitle(a, b);
     if (sortMode === 'status')  return (b.installed - a.installed)
-                                    || (b.downloaded - a.downloaded) || byTitle(a, b);
+                                    || ((b.downloaded || b.list_status === 'archived')
+                                        - (a.downloaded || a.list_status === 'archived')) || byTitle(a, b);
     return byTitle(a, b);
   });
   return arr;
@@ -2549,9 +2563,12 @@ function renderList() {
       ? `<span class="status-pip pip-ok" title="${t('status.installed')}"></span>`
       : g.downloaded
         ? `<span class="status-pip pip-dl" title="${t('status.downloaded')}"></span>`
-        : '';
+        : g.list_status === 'archived'
+          ? `<span class="status-pip pip-dl" title="${t('status.inArchive')}"></span>`
+          : '';
     const statusTxt = g.installed ? t('status.installed')
                     : g.downloaded ? t('status.downloaded')
+                    : g.list_status === 'archived' ? t('status.inArchive')
                     : t('status.notDownloaded');
     const plats = (g.platforms||[]).join(', ');
     const sub = plats ? `${statusTxt} · ${plats}` : statusTxt;
@@ -3626,6 +3643,10 @@ function renderPlanAll() {
   document.getElementById('planAllTable').innerHTML =
     PlanView.planAllView(_planAll.plans, {filter: _planAll.filter, sort: _planAll.sort});
   document.getElementById('planAllStart').disabled = _planAll.running;
+  const nExec = PlanView.executablePlans(_planAll.plans).length;
+  const ex = document.getElementById('planAllExec');
+  ex.textContent = t('plan.exec', {n: nExec});
+  ex.disabled = _planAll.running || _planAll.executing || !nExec;
   document.getElementById('planAllStop').style.display = _planAll.running ? '' : 'none';
   document.querySelectorAll('#planAllFilters [data-filter]').forEach(b =>
     b.classList.toggle('active', b.getAttribute('data-filter') === _planAll.filter));
@@ -3667,6 +3688,18 @@ document.getElementById('planAllTable').addEventListener('click', e => {
   const g = games.find(x => String((x.product || {}).id || x.id) === pid) || {id: pid};
   openPlan(String(g.id), false);                         // saved plan: details of this one game only
 });
+
+/* "Wykonaj plan": the saved executable plans go to the existing queue as one archive task (no new scan). */
+async function executePlanAll() {
+  const n = PlanView.executablePlans(_planAll.plans).length;
+  if (!n || !confirm(t('plan.execConfirm', {n}))) return;
+  _planAll.executing = true;                              // one click = one queue entry
+  renderPlanAll();
+  let r;
+  try { r = await call('plan_execute'); } catch (e) { r = {ok: false, error: String(e)}; }
+  if (!r.ok) { _planAll.executing = false; renderPlanAll(); toast(r.error || '?', 'err'); return; }
+  toast(t('plan.execQueued', {n: r.count}) + ((r.skipped || []).length ? ' ' + t('plan.execSkipped', {n: r.skipped.length}) : ''), 'ok');
+}
 
 function closePlanAll() {
   document.getElementById('planAllModal').style.display = 'none';

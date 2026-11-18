@@ -716,8 +716,11 @@ class IsolatedExchange(PlanApiBase):
         app.get_update_plans()
         self.assertEqual(snap(), before)                        # nothing under BASE / archive / games changed
         self.assertFalse((app.BASE / "_depots" / "exchange").exists())
-        self.assertEqual(sorted(p.relative_to(ex_dir).as_posix() for p in ex_dir.rglob("*") if p.is_file()),
+        files = sorted(p.relative_to(ex_dir).as_posix() for p in ex_dir.rglob("*") if p.is_file())
+        self.assertEqual([f for f in files if not f.startswith("manifests/")],
                          ["plans/100.json", "plans/200.json", "status.json"])
+        self.assertTrue(all(re.fullmatch(r"manifests/(depot|dep)-[^/]+\.json", f)
+                            for f in files if f.startswith("manifests/")))   # saved for "Wykonaj plan"
         self.assertEqual(self.fetched, [])
 
     def test_setting_exchange_dir_when_no_env(self):
@@ -758,6 +761,206 @@ class Performance(PlanApiBase):
         self.assertEqual(self.fetched, [])
         self.assertLess(took, 60)                               # generous: a hang, not a tuning target
         sys.stderr.write(f"\n[pomiar] {total[0]}\n")
+
+
+class Counter:
+    """Wraps app.<name> and counts calls while active."""
+
+    def __init__(self, *names):
+        self.names, self.n, self.orig = names, {k: 0 for k in names}, {}
+
+    def __enter__(self):
+        for k in self.names:
+            self.orig[k] = getattr(app, k)
+            setattr(app, k, self._wrap(k, self.orig[k]))
+        return self
+
+    def _wrap(self, k, f):
+        def w(*a, **kw):
+            self.n[k] += 1
+            return f(*a, **kw)
+        return w
+
+    def __exit__(self, *a):
+        for k, f in self.orig.items():
+            setattr(app, k, f)
+
+
+class PlanExecute(PlanApiBase):
+    """'Wykonaj plan': saved plans through the archive engine — no library scan, no new plan, only missing data."""
+
+    def setUp(self):
+        super().setUp()
+        self.addCleanup(lambda: (app._PLAN_EXEC.clear(), app._PLAN_EXEC_QUEUED.clear()))
+
+    def world(self):
+        self.archived("100", "alpha")                            # → plan_ready (new build)
+        self.new_build("100", "alpha")
+        self.w.games[-1]["product"]["downloads"] = {"installers": [{"os": app._MY_OS}]}
+        self.archived("200", "beta")                             # → up_to_date
+        self.w.games[-1]["product"]["downloads"] = {"installers": [{"os": app._MY_OS}]}
+        self.listed("300", "gamma")                              # → first_archive
+        self.w.games.sort(key=lambda g: g["id"])
+
+    def plan_all(self):
+        seen, orig = {}, DA.diff_manifests
+
+        def spy(*a, **kw):
+            r = orig(*a, **kw)
+            seen.update(r["download_set"])
+            return r
+        DA.diff_manifests = spy
+        try:
+            app._PLAN_ALL["cancel"].clear()
+            app._plan_all_worker(app._plan_all_targets())
+        finally:
+            DA.diff_manifests = orig
+        self.fetched.clear()
+        return set(seen)
+
+    def wait_queue(self):
+        for _ in range(400):
+            if not app._is_running and not app._task_queue:
+                return
+            time.sleep(0.025)
+        self.fail("queue did not finish")
+
+    def states(self):
+        return {k: v["ui_state"] for k, v in self.status()["update_plans"].items()}
+
+    def test_runs_only_executable_plans_without_rescanning_or_replanning(self):
+        self.world()
+        planned = self.plan_all()
+        self.assertEqual(self.states(), {"100": "plan_ready", "200": "up_to_date", "300": "first_archive"})
+        beta_before = self.arc().read_record("200", "B1")
+        with Counter("scan_downloaded_games", "_plan_update", "_plan_all_targets", "_pick_build",
+                     "_fetch_build_and_meta", "_cdn_depot_manifest", "_dependency_manifests",
+                     "_update_worker") as c:
+            r = app.plan_execute()
+            self.assertTrue(r["ok"], r)
+            self.assertEqual(r["count"], 2)
+            self.assertEqual({s["product_id"] for s in r["skipped"]}, {"200"})
+            self.wait_queue()
+        self.assertEqual(c.n, {k: 0 for k in c.n})               # no scan, no plan, no metadata, no extras
+        self.assertEqual(set(self.fetched), planned)             # exactly the planned missing chunks
+        self.assertEqual(len(self.fetched), len(set(self.fetched)))
+        self.assertEqual(self.arc().read_record("100", "B2")["state"], DA.STATE_COMPLETE)
+        self.assertEqual(self.arc().read_record("300", "B1")["state"], DA.STATE_COMPLETE)
+        self.assertEqual(self.arc().read_record("200", "B1"), beta_before)   # up to date: untouched
+        plans = self.status()["update_plans"]
+        self.assertTrue(plans["100"]["stale"] and plans["300"]["stale"])   # executed: re-plan before again
+        self.assertFalse(plans["200"].get("stale"))
+        report = [m for m in self.sent if m.get("type") == "migration_report"][-1]["report"]
+        self.assertEqual(report["total"], 2)
+
+    def test_chunks_already_present_are_not_downloaded(self):
+        self.world()
+        planned = self.plan_all()
+        arrived = sorted(planned)[0]                              # e.g. stored by another run meanwhile
+        self.arc().put_chunk(arrived, self.w.cdn[arrived])
+        app.plan_execute()
+        self.wait_queue()
+        self.assertNotIn(arrived, self.fetched)
+        self.assertEqual(set(self.fetched), planned - {arrived})
+
+    def test_same_plan_is_never_queued_twice(self):
+        self.world()
+        self.plan_all()
+        gate, inside = threading.Event(), threading.Event()
+        orig = app._archive_all_loop
+
+        def held(*a, **kw):
+            inside.set()
+            gate.wait(5)
+            return orig(*a, **kw)
+        app._archive_all_loop = held
+        try:
+            first = app.plan_execute()
+            self.assertTrue(inside.wait(5))
+            second = app.plan_execute()
+            self.assertFalse(second["ok"])
+            self.assertEqual(sorted(second["already_queued"]), ["100", "300"])
+            self.assertEqual(list(app._task_queue), [])
+        finally:
+            gate.set()
+            app._archive_all_loop = orig
+        self.wait_queue()
+        self.assertTrue(first["ok"])
+        self.assertEqual(len(self.fetched), len(set(self.fetched)))
+
+    def test_stale_plan_needs_this_game_rechecked_others_run(self):
+        self.world()
+        self.plan_all()
+        app._mark_plans_stale(["300"])
+        r = app.plan_execute()
+        self.assertEqual(r["count"], 1)
+        self.assertIn("Sprawdź plan tej gry ponownie", next(s["reason"] for s in r["skipped"] if s["product_id"] == "300"))
+        self.wait_queue()
+        self.assertEqual(self.arc().list_records("300"), [])
+        self.assertEqual(self.arc().read_record("100", "B2")["state"], DA.STATE_COMPLETE)
+
+    def test_other_configuration_means_recheck_and_no_download(self):
+        self.world()
+        self.plan_all()
+        self.settings["update_langs"] = ["en", "de"]
+        app.plan_execute()
+        self.wait_queue()
+        self.assertEqual(self.fetched, [])
+        report = [m for m in self.sent if m.get("type") == "migration_report"][-1]["report"]
+        self.assertEqual(len(report["skipped"]), 2)
+        self.assertTrue(all("innej konfiguracji" in s["reason"] and "ponownie" in s["reason"] for s in report["skipped"]))
+
+    def test_scope_changed_since_planning_is_skipped_by_the_engine(self):
+        self.world()
+        self.owned = {"100", "1001", "1002", "200", "2001", "2002", "300"}   # gamma's DLC not owned when planned
+        self.plan_all()
+        app.plan_execute()                                        # …but its DLC installer is on disk: the engine
+        self.wait_queue()                                         # would archive more than the plan describes
+        report = [m for m in self.sent if m.get("type") == "migration_report"][-1]["report"]
+        gamma = [s for s in report["skipped"] if s["title"] == "Gamma"]
+        self.assertTrue(gamma and "innej konfiguracji" in gamma[0]["reason"] and "ponownie" in gamma[0]["reason"],
+                        report["skipped"])
+        self.assertEqual(self.arc().list_records("300"), [])
+        self.assertEqual(self.arc().read_record("100", "B2")["state"], DA.STATE_COMPLETE)   # the others run
+
+
+class ListStatus(PlanApiBase):
+    """Regression: '9 Years of Shadows' — a complete depot archive, installers removed by the migration, only game
+    metadata in its folder: the list said 'Nie pobrana' and the 'Pobrane' filter left it out."""
+
+    def test_complete_archive_without_installer_is_listed_as_in_archive(self):
+        self.w.add_game("2099051765", "9_years_of_shadows")
+        self.w.games[-1]["title"] = "9 Years of Shadows"
+        self.assertTrue(app._archive_all_worker())
+        folder = app.BASE / "9_years_of_shadows"
+        import shutil
+        shutil.rmtree(folder / "extras")                         # as on disk: no extras either
+        (folder / "setup_9_years_of_shadows_0.9_(1000).exe").unlink()   # nor the synthetic old installer
+        left = sorted(p.name for p in folder.iterdir())
+        self.assertTrue(left and all(self.META_FILE.match(n) for n in left), left)   # metadata only
+        for x in self.w.games:                                   # fields get_games reads from scan_games
+            for k, v in (("icon", None), ("logo", None), ("background", None), ("platforms", ["windows"]),
+                         ("languages", []), ("installable", True), ("release_date", None), ("rating", None),
+                         ("rating_count", None), ("details", {})):
+                x.setdefault(k, v)
+        g = next(x for x in app.get_games() if x["id"] == "2099051765")
+        self.assertEqual(self.arc().read_record("2099051765", "B1")["state"], DA.STATE_COMPLETE)
+        self.assertFalse(g["downloaded"])                          # metadata is still not a download
+        self.assertTrue(g["archived"])
+        self.assertEqual(g["list_status"], "archived")
+
+    def test_list_status_order(self):
+        done, part = {"state": DA.STATE_COMPLETE}, {"state": DA.STATE_INCOMPLETE}
+        self.assertEqual(app._list_status(True, True, done), "installed")
+        self.assertEqual(app._list_status(False, True, done), "downloaded")
+        self.assertEqual(app._list_status(False, False, done), "archived")
+        self.assertEqual(app._list_status(False, False, part), "none")      # incomplete archive: not downloaded
+        self.assertEqual(app._list_status(False, False, None), "none")
+
+    def test_list_and_downloaded_filter_use_it(self):
+        html = (ROOT / "assets" / "index.html").read_text(encoding="utf-8")
+        self.assertIn("if (filterMode === 'downloaded') arr = arr.filter(g => g.downloaded || g.list_status === 'archived');", html)
+        self.assertIn(": g.list_status === 'archived' ? t('status.inArchive')", html)
 
 
 class UiWiring(unittest.TestCase):
@@ -801,6 +1004,17 @@ class UiWiring(unittest.TestCase):
 
 @unittest.skipUnless(__import__("shutil").which("node"), "Node.js not installed")
 class PlanViewJs(unittest.TestCase):
+    def test_inline_ui_script_parses(self):
+        """The UI script lives inside index.html: a stray raw newline in a string breaks the whole page."""
+        import subprocess, tempfile
+        html = (ROOT / "assets" / "index.html").read_text(encoding="utf-8")
+        code = chr(10).join(re.findall(r"<script>(.*?)</script>", html, re.S))
+        with tempfile.TemporaryDirectory() as d:
+            f = Path(d) / "inline.js"
+            f.write_text(code, encoding="utf-8")
+            r = subprocess.run(["node", "--check", str(f)], capture_output=True, text=True, timeout=60)
+        self.assertEqual(r.returncode, 0, r.stderr[-800:])
+
     def test_node_suite(self):
         import subprocess
         r = subprocess.run(["node", "--test", str(ROOT / "tests" / "js" / "plan_view.test.mjs")],

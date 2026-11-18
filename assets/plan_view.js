@@ -236,6 +236,12 @@
     skipped: function (s) { return stateOf(s) === 'skipped'; }
   };
 
+  /* Plans "Wykonaj plan" runs: an update, a first download or finishing an incomplete archive, not stale. */
+  var EXEC_STATES = {plan_ready: 1, first_archive: 1, incomplete_archive: 1};
+  function executablePlans(plans) {
+    return (plans || []).filter(function (s) { return EXEC_STATES[stateOf(s)] && !s.stale; });
+  }
+
   function filterPlans(plans, filter) {
     var f = FILTERS[filter] || FILTERS.all;
     return (plans || []).filter(f);
@@ -320,6 +326,6 @@
           fmtBytes: fmtBytes, fmtInt: fmtInt, pathCountText: pathCountText,
           entriesToggleView: entriesToggleView, defaultKind: defaultKind, stateLabel: stateLabel, stateRank: stateRank, checkingView: checkingView,
           summaryView: summaryView, tabsView: tabsView, fileListView: fileListView, ambiguousView: ambiguousView,
-          filterPlans: filterPlans, sortPlans: sortPlans, planRows: planRows, planAllView: planAllView,
+          filterPlans: filterPlans, executablePlans: executablePlans, sortPlans: sortPlans, planRows: planRows, planAllView: planAllView,
           progressView: progressView, mergePlan: mergePlan};
 }));

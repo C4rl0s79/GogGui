@@ -165,3 +165,10 @@ test('a plan opens on its first non-empty list', () => {
   assert.equal(PV.defaultKind({changed: 0, added: 0, removed: 0, repair: 3}), 'repair');
   assert.equal(PV.defaultKind({}), 'changed');
 });
+
+test('"Wykonaj plan" runs only updates, first downloads and incomplete archives that are not stale', () => {
+  const plans = [S('1', 'plan_ready'), S('2', 'first_archive'), S('3', 'incomplete_archive'),
+                 S('4', 'up_to_date'), S('5', 'error'), S('6', 'skipped'), S('7', 'v1_unavailable'),
+                 S('8', 'ambiguous_path'), S('9', 'plan_ready', {stale: true})];
+  assert.deepEqual(PV.executablePlans(plans).map(p => p.product_id), ['1', '2', '3']);
+});

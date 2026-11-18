@@ -31,6 +31,26 @@ atomowy (plik tymczasowy + zamiana).
 | H | **Indeks chunków / cache planu** (backlog, warunkowo): lokalny indeks `compressedMd5` → chunk, aktualizowany przy archiwizacji, GC i weryfikacji. Przywróciłby dokładny plan `first_archive` (dziś sprawdza tylko zależności) i przyspieszył `incomplete_archive`. Do wdrożenia tylko wtedy, gdy pomiary na dysku lokalnym (serwer EmuStart) pokażą realną potrzebę | backlog |
 | I | **Folder z samym `extras/` i bezpieczne „Usuń installer”** (backlog): folder zawierający wyłącznie `extras/` nie może być klasyfikowany jako gra z instalatorem (dziś widok gry pokazuje wtedy „Uruchom instalator” i „Usuń installer”). „Usuń installer” nie może usuwać `extras/` ani metadanych czytanych przez serwer EmuStart (`product_<slug>.json`, `galaxy_<slug>.json`, `game-details.json`, grafiki) — dziś `delete_installer` usuwa cały folder gry. Przed usunięciem pokazać dokładną listę plików i katalogów do usunięcia | backlog |
 
+## [1.7.1] - 2026-11-18
+
+### Dodano
+- **„Wykonaj plan” w oknie „Sprawdź plan”.** Wykonuje wyłącznie zapisane plany wymagające aktualizacji, pierwszego
+  pobrania lub uzupełnienia niekompletnego archiwum. Pomija gry aktualne, błędy, pominięte, v1, niejednoznaczne
+  i nieaktualne plany. Jedno zadanie w istniejącej kolejce, silnik archiwizacji „Aktualizuj wszystko” bez
+  odświeżania extras. Plan zapisuje docelowy build, meta, zakres języków i DLC oraz manifesty
+  (`exchange/manifests/`), a wykonanie używa ich bez ponownego pobierania metadanych, bez nowego diffu i bez skanu
+  biblioteki. Tuż przed pobraniem silnik sprawdza na dysku każdy chunk tej gry i pomija obecne. Plan nieaktualny,
+  dla innej konfiguracji (języki, katalog archiwum, DLC) albo przy zmienionym archiwum wymaga ponownego sprawdzenia
+  tylko tej gry, z komunikatem w raporcie. Ten sam plan nie trafi do kolejki dwa razy. Wykonane plany są potem
+  oznaczane jako nieaktualne.
+
+### Poprawiono
+- **Gra z kompletnym archiwum depotów bez instalatora jest na liście „📦 W archiwum (depot)” i w filtrze
+  „Pobrane”.** Regresja z poprawki metadanych (1.7.0): po migracji w folderze gry zostają same metadane, więc np.
+  „9 Years of Shadows” (kompletny rekord, build 58654342451764486) była „Nie pobrana”, choć widok gry oferował
+  „Zainstaluj z lokalnego depo”. Metadane nadal nie są liczone jako pobrane pliki; status listy bierze kompletne
+  archiwum z `get_games` (`list_status`).
+
 ## [1.7.0] - 2026-11-18
 
 Plan aktualizacji archiwum depotów (etap B): porównanie manifestów, endpointy i UI („Plan aktualizacji”,

@@ -3,7 +3,7 @@ import sys
 import urllib.request, urllib.error, urllib.parse
 import hashlib, time, webbrowser, queue
 import xml.etree.ElementTree as ET
-from concurrent.futures import ThreadPoolExecutor, as_completed, wait as _fut_wait
+from concurrent.futures import ThreadPoolExecutor, as_completed, wait as _fut_wait, Future
 from pathlib import Path
 import webview
 import depot_archive as DA
@@ -24,7 +24,7 @@ def _base_dirs():
     return app, res
 
 
-APP_VERSION = "1.7.0"      # see CHANGELOG.md
+APP_VERSION = "1.7.1"      # see CHANGELOG.md
 
 IS_WIN = os.name == "nt"
 # The user's platform as GOG's API names it — decides which offline installers
@@ -1071,6 +1071,16 @@ def build_index() -> dict:
     }
 
 
+def _list_status(installed: bool, downloaded: bool, arch) -> str:
+    if installed:
+        return "installed"
+    if downloaded:
+        return "downloaded"
+    if arch and arch.get("state") == DA.STATE_COMPLETE:
+        return "archived"
+    return "none"
+
+
 def get_games() -> list:
     """Return all games enriched with live downloaded/installed status."""
     installed  = scan_installed_games()   # one directory scan
@@ -1113,6 +1123,10 @@ def get_games() -> list:
             #         dlcs, size, pending_cleanup}
             "archive":         arch,
             "archived":        bool(arch),
+            # What the list / "Pobrane" filter show: installed > downloaded files (installers / extras) >
+            # a COMPLETE depot archive (after migration the installers are gone and only game metadata stays in
+            # the folder — the metadata itself never counts as downloaded) > nothing.
+            "list_status":     _list_status(g["id"] in installed, dl["downloaded"], arch),
         })
     return result
 
@@ -4202,7 +4216,7 @@ def _archive_build(g: dict, pid: str, build: dict, meta: dict, plan: dict, box: 
     fresh = set()                              # downloaded + checked in memory this run
     mans = []
     if plan["deps"]:                           # before any download: a missing redist fails fast
-        mans, dep_missing = _dependency_manifests(plan["deps"])
+        mans, dep_missing = _plan_exec_deps(pid, plan["deps"]) or _dependency_manifests(plan["deps"])
         if dep_missing:
             raise RuntimeError("brakujące zależności w repozytorium GOG: "
                                + ", ".join(sorted(dep_missing)))
@@ -4242,7 +4256,8 @@ def _archive_build(g: dict, pid: str, build: dict, meta: dict, plan: dict, box: 
         v1_added = stats["added"]
     for d in plan["depots"]:
         if not arc.has_manifest("depot", d["manifest"]):
-            arc.put_manifest("depot", d["manifest"], _cdn_depot_manifest(d))
+            arc.put_manifest("depot", d["manifest"],
+                             _plan_exec_manifest(pid, d["manifest"]) or _cdn_depot_manifest(d))
     dep_recs = []
     if mans:
         targets = meta.get("v1RedistTargets") or {}
@@ -4424,6 +4439,7 @@ def _archive_scope(g: dict, langs, dlcs, box: dict) -> tuple:
         langs = list(langs or []) + list((existing.get("scope") or {}).get("languages") or [])
         dlcs = set(dlcs or ()) | set((existing.get("scope") or {}).get("dlcs") or [])
     plan = _plan_archive_scope(meta, pid, langs, dlcs)
+    _plan_exec_same_scope(pid, plan)
     for l in plan["langs_missing"]:
         _push_log(f"⚠ Język „{l}” nie występuje w buildzie Galaxy — nie archiwizuję go "
                   "(bez zamiany na inny język).")
@@ -4513,6 +4529,16 @@ def _write_update_plan(pid: str, summary: dict, detail: dict | None) -> None:
     """Atomic (tmp + fsync + os.replace) writes under one lock: the plan file first, then its summary merged
     into status.json (other keys and other games' entries are kept)."""
     ex = _exchange_dir()
+    if detail is not None and detail.get("execution"):
+        exe = dict(detail["execution"])
+        for mid, man in (exe.pop("manifests", None) or {}).items():
+            _plan_put_manifest(ex, "depot", mid, man)
+        deps = []
+        for d in exe.get("deps") or []:
+            _plan_put_manifest(ex, "dep", d["manifest"], d.get("man"))
+            deps.append({"id": d["id"], "manifest": d["manifest"]})
+        exe["deps"] = deps
+        detail = {**detail, "execution": exe}
     with _EXCHANGE_LOCK:
         if detail is not None:
             DA._write_json(ex / "plans" / f"{pid}.json",
@@ -4664,13 +4690,17 @@ def _plan_update(g: dict) -> dict:
         try:
             old_groups = _plan_old_groups(arc, rec) if rec else []
             new_groups = []
+            fetched = {}
             for d in plan["depots"]:
                 before_http("manifesty")
-                new_groups.append((DA.depot_group_key(d, _MY_OS, 2), [_cdn_depot_manifest(d)]))
+                fetched[str(d["manifest"])] = _cdn_depot_manifest(d)
+                new_groups.append((DA.depot_group_key(d, _MY_OS, 2), [fetched[str(d["manifest"])]]))
+            dep_mans = []
             dep_issues, dep_groups = [], []
             if plan["deps"]:
                 before_http("manifesty zależności")
                 mans, dep_missing = _dependency_manifests(plan["deps"])
+                dep_mans = mans
                 dep_groups = [(DA.depot_group_key({"dependency": m["id"]}, "", 0), [m["man"]]) for m in mans]
                 dep_issues = [{"issue": "dependency_missing", "id": x} for x in sorted(dep_missing)]
             new_groups += dep_groups
@@ -4721,7 +4751,16 @@ def _plan_update(g: dict) -> dict:
     groups = r["groups"]
     if not any_change:                         # no changes: no list of unchanged files
         groups = [{k: v for k, v in gr.items() if k != "unchanged"} for gr in groups]
-    return summary, {"groups": groups, "issues": issues}
+    out = {"groups": groups, "issues": issues}
+    if state in ("update", "not_archived", "incomplete_archive"):
+        # Executing the plan ("Wykonaj plan") reuses exactly these: no second metadata fetch, no new diff.
+        out["execution"] = {"build": build, "meta": meta, "from_build": (rec or {}).get("build_id") or "",
+                            "from_state": mode, "config": _plan_exec_config(),
+                            "scope": {"langs": sorted(plan["langs"]), "dlcs": sorted(plan["dlcs"]),
+                                      "dlc_meta_only": sorted(plan["dlc_meta_only"])},
+                            "depots": sorted(fetched), "manifests": fetched,
+                            "deps": [{"id": m["id"], "manifest": m["manifest"], "man": m["man"]} for m in dep_mans]}
+    return summary, out
 
 
 _UI_STATE = {"error": "error", "v1_unavailable": "v1_unavailable", "not_archived": "first_archive",
@@ -5036,6 +5075,184 @@ def plan_update_all() -> dict:
         _PLAN_ALL["thread"] = t
         t.start()
     return {"ok": True, "total": len(targets)}
+
+
+# ── "Wykonaj plan": run the saved plans through the archive engine (_archive_all_loop) ──────────────────────
+# Only plan_ready / first_archive / incomplete_archive. The plan's build, meta and manifests are reused (no new
+# metadata fetch, no new diff, no library scan); the engine still checks every planned chunk on disk right before
+# downloading (_archive_build → missing_chunks), so chunks that arrived meanwhile are skipped.
+_PLAN_EXEC_STATES = {"plan_ready", "first_archive", "incomplete_archive"}
+_PLAN_EXEC: dict = {}            # pid -> execution data of the plan being executed
+_PLAN_EXEC_QUEUED: set = set()   # pids queued or running — the same plan is never queued twice
+_PLAN_EXEC_LOCK = threading.Lock()
+_REPLAN = "Sprawdź plan tej gry ponownie."
+
+
+def _plan_exec_config() -> dict:
+    """What a plan depends on besides the archive: languages kept and where the archive is."""
+    st = get_settings()
+    return {"update_langs": sorted(_inst_lang(x) for x in (st.get("update_langs") or ["en"])),
+            "archive_root": str(_archive_root())}
+
+
+def _plan_put_manifest(ex: Path, kind: str, mid, man) -> None:
+    p = ex / "manifests" / f"{kind}-{mid}.json"
+    if man is not None and not p.exists():
+        DA._atomic_write(p, json.dumps(man, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
+
+
+def _plan_load_manifest(kind: str, mid):
+    return DA._read_json(_exchange_dir() / "manifests" / f"{kind}-{mid}.json")
+
+
+def _plan_exec_manifest(pid, mid):
+    """A depot manifest saved by the plan being executed for this game (None = fetch as usual)."""
+    exe = _PLAN_EXEC.get(str(pid))
+    return _plan_load_manifest("depot", mid) if exe and str(mid) in set(exe.get("depots") or []) else None
+
+
+def _plan_exec_deps(pid, dep_ids):
+    """Dependency manifests saved by the plan, as _dependency_manifests returns them (None = fetch as usual)."""
+    exe = _PLAN_EXEC.get(str(pid))
+    if not exe:
+        return None
+    have = {d["id"]: d["manifest"] for d in exe.get("deps") or []}
+    if set(dep_ids) - set(have):
+        return None
+    mans = [{"id": i, "manifest": have[i], "man": _plan_load_manifest("dep", have[i])} for i in dep_ids]
+    return None if any(m["man"] is None for m in mans) else (mans, set())
+
+
+def _plan_exec_same_scope(pid, plan: dict) -> None:
+    """While executing a plan: the depots and DLC the engine is about to archive must be the planned ones."""
+    exe = _PLAN_EXEC.get(str(pid))
+    if not exe:
+        return
+    now = (sorted(str(d["manifest"]) for d in plan["depots"]), sorted(plan["dlcs"]))
+    if now != (sorted(exe.get("depots") or []), sorted((exe.get("scope") or {}).get("dlcs") or [])):
+        raise _GameSkip("plan dotyczy innej konfiguracji (języki / DLC / build) — " + _REPLAN)
+
+
+def _plan_exec_check(arc, pid: str, summary: dict, detail) -> str:
+    """'' = the saved plan can be executed as is; otherwise why this one game has to be planned again."""
+    exe = (detail or {}).get("execution") if isinstance(detail, dict) else None
+    if summary.get("stale"):
+        return "plan nieaktualny — po jego wyliczeniu ruszyła aktualizacja tej gry. " + _REPLAN
+    if not exe:
+        return "zapis planu nie zawiera danych do wykonania (plan z poprzedniej wersji). " + _REPLAN
+    if exe.get("config") != _plan_exec_config():
+        return "plan dotyczy innej konfiguracji (języki / katalog archiwum). " + _REPLAN
+    recs = arc.list_records(pid) if arc.exists() else []
+    base = _plan_base_record(arc, pid)
+    now_state = "complete" if base else "incomplete" if recs else "first"
+    if now_state != exe.get("from_state") or ((base or {}).get("build_id") or "") != (exe.get("from_build") or ""):
+        return "archiwum tej gry zmieniło się od wyliczenia planu. " + _REPLAN
+    missing = [m for m in exe.get("depots") or [] if not arc.has_manifest("depot", m)
+               and not (_exchange_dir() / "manifests" / f"depot-{m}.json").exists()]
+    if missing:
+        return "brak zapisanych manifestów planu. " + _REPLAN
+    return ""
+
+
+def plan_execute_candidates() -> dict:
+    """The saved plans 'Wykonaj plan' would run, and the others with why (from status.json only)."""
+    st = DA._read_json(_exchange_dir() / "status.json")
+    plans = list(((st or {}).get("update_plans") or {}).values()) if isinstance(st, dict) else []
+    run, skip = [], []
+    labels = {"up_to_date": "aktualna", "error": "błąd planu", "skipped": "pominięta",
+              "v1_unavailable": "v1 — plan niedostępny", "ambiguous_path": "niejednoznaczne ścieżki — wymaga decyzji"}
+    for s in plans:
+        ui = s.get("ui_state")
+        if ui in _PLAN_EXEC_STATES and not s.get("stale"):
+            run.append(s)
+        else:
+            why = ("plan nieaktualny — " + _REPLAN) if s.get("stale") and ui in _PLAN_EXEC_STATES \
+                else labels.get(ui, ui or "?")
+            skip.append({"product_id": s.get("product_id"), "title": s.get("title"), "reason": why})
+    return {"run": run, "skip": skip}
+
+
+def plan_execute(product_ids=None) -> dict:
+    """UI 'Wykonaj plan': queue the executable saved plans (all, or the given product ids) as ONE task."""
+    c = plan_execute_candidates()
+    want = {str(x) for x in product_ids} if product_ids else None
+    pids = [str(s["product_id"]) for s in c["run"] if want is None or str(s["product_id"]) in want]
+    with _PLAN_EXEC_LOCK:
+        dup = [p for p in pids if p in _PLAN_EXEC_QUEUED]
+        new = [p for p in pids if p not in _PLAN_EXEC_QUEUED]
+        if not new:
+            return {"ok": False, "error": ("te plany są już w kolejce" if dup else "brak gier do wykonania"),
+                    "already_queued": dup, "skipped": c["skip"]}
+        _PLAN_EXEC_QUEUED.update(new)
+    r = _submit_task(lambda: _plan_exec_worker(new), "PLAN_EXEC", queueable=True)
+    if not r.get("ok"):
+        with _PLAN_EXEC_LOCK:
+            _PLAN_EXEC_QUEUED.difference_update(new)
+        return {**r, "skipped": c["skip"]}
+    return {**r, "count": len(new), "already_queued": dup, "skipped": c["skip"]}
+
+
+def _plan_exec_worker(pids: list) -> bool:
+    global _BUILD_PREFETCH, _GC_BATCH
+    try:
+        ex = _exchange_dir()
+        st = DA._read_json(ex / "status.json") or {}
+        summaries = (st.get("update_plans") or {}) if isinstance(st, dict) else {}
+        pid_of = lambda g: str(g["product"].get("id") or g["id"])
+        games = {pid_of(g): g for g in scan_games()}           # the library index, not a disk scan
+        arc = _archive()
+        arc.ensure()
+        report = {"migrated": [], "updated": [], "unchanged": [], "skipped": [], "errors": [],
+                  "kept": [], "paused": None, "deleted_bytes": 0, "added_bytes": 0, "total": 0}
+        targets, prefetch = [], {}
+        for pid in pids:
+            s = summaries.get(pid) or {}
+            title = s.get("title") or pid
+            detail = DA._read_json(ex / "plans" / f"{pid}.json")
+            why = "gra nie występuje w bibliotece. " + _REPLAN if pid not in games else \
+                _plan_exec_check(arc, pid, s, detail)
+            if why:
+                report["skipped"].append({"title": title, "reason": why})
+                _push_log(f"↻ {title}: {why}")
+                continue
+            exe = detail["execution"]
+            fu = Future()
+            fu.set_result((exe["build"], exe["meta"]))
+            prefetch[pid] = fu
+            _PLAN_EXEC[pid] = exe
+            targets.append(games[pid])
+        report["total"] = len(targets)
+        _push_log(f"── Wykonanie planu: {len(targets)} gier"
+                  + (f", {len(report['skipped'])} do ponownego sprawdzenia" if report["skipped"] else "") + " ──")
+        if targets:
+            pend = {pid_of(g) for g in targets
+                    if (arc.read_journal(pid_of(g)) or {}).get("phase") in DA.PENDING_CLEANUP}
+            _GC_BATCH, _BUILD_PREFETCH = {"cands": set(), "full": False}, prefetch
+            pre = ThreadPoolExecutor(max_workers=1)
+            try:
+                _archive_all_loop(arc, targets, pid_of, pend, report, pre, extras=False)
+            finally:
+                pre.shutdown(wait=False, cancel_futures=True)
+                _BUILD_PREFETCH = None
+                batch, _GC_BATCH = _GC_BATCH, None
+                if batch["full"] or batch["cands"]:
+                    _archive_gc(arc, None if batch["full"] else batch["cands"])
+            done = [pid_of(g) for g in targets]
+            _mark_plans_stale(done)                            # executed: a new plan is needed for these
+            for pid in done:                                   # their manifests are in the archive now
+                for mid in _PLAN_EXEC.get(pid, {}).get("depots") or []:
+                    if arc.has_manifest("depot", mid):
+                        try:
+                            (ex / "manifests" / f"depot-{mid}.json").unlink()
+                        except OSError:
+                            pass
+        _emit_archive_report(report)
+        return not report["errors"] and not report["paused"]
+    finally:
+        for pid in pids:
+            _PLAN_EXEC.pop(pid, None)
+        with _PLAN_EXEC_LOCK:
+            _PLAN_EXEC_QUEUED.difference_update(pids)
 
 
 def cancel_plan_all() -> dict:
@@ -5397,7 +5614,7 @@ def _archive_all_worker(only_ids=None) -> bool:
     return not report["errors"] and not report["paused"]
 
 
-def _archive_all_loop(arc, targets: list, pid_of, pend: set, report: dict, pre) -> None:
+def _archive_all_loop(arc, targets: list, pid_of, pend: set, report: dict, pre, extras: bool = True) -> None:
     for i, g in enumerate(targets, 1):
         for nxt in targets[i - 1:i - 1 + _PREFETCH_AHEAD]:
             p = pid_of(nxt)
@@ -5441,7 +5658,7 @@ def _archive_all_loop(arc, targets: list, pid_of, pend: set, report: dict, pre) 
         dl = _downloaded_for_game(g)
         ex_dir = Path(dl["installer_path"]) / "extras" if dl.get("installer_path") else None
         has_extras = (any(ex_dir.iterdir()) if ex_dir is not None and ex_dir.is_dir() else False)             if get_settings().get("extras_subdir", True) else bool(dl.get("extras_files"))
-        if has_extras and not _cancel.is_set():
+        if extras and has_extras and not _cancel.is_set():
             try:
                 _update_worker(g["id"], extras_only=True)
             except Exception as exc:
@@ -7107,6 +7324,7 @@ class Api:
     def get_update_plans(self):                 return get_update_plans()
     def plan_update_all(self):                  return plan_update_all()
     def cancel_plan_all(self):                  return cancel_plan_all()
+    def plan_execute(self, product_ids=None):   return plan_execute(product_ids)
     def update_all_games(self):                 return update_all_games()
     def run_installer(self, game_id):           return run_installer(game_id)
     def launch_game(self, game_id):             return launch_game(game_id)
