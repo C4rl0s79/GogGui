@@ -5,7 +5,7 @@
 #
 # Layout expected next to this .spec:
 #   app.py, depot_archive.py, file_state.py
-#   assets/index.html
+#   assets/index.html, assets/plan_view.js
 #
 # Requires (pip):  pywebview  pythonnet  cryptography  zstandard
 # (On Python 3.14 `zstandard` is optional — the stdlib `compression.zstd` is used.)
@@ -16,7 +16,7 @@ from PyInstaller.utils.hooks import collect_all, collect_submodules
 datas, binaries, hiddenimports = [], [], []
 
 # The single-file UI must be bundled and is loaded from RESOURCE_DIR/assets.
-datas += [('assets/index.html', 'assets')]
+datas += [('assets/index.html', 'assets'), ('assets/plan_view.js', 'assets')]
 
 # pywebview: platform backends + its bundled JS/DLLs. http_server=True pulls in
 # bottle; the Windows backend pulls in pythonnet (clr).

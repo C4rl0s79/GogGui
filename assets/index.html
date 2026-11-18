@@ -837,6 +837,49 @@ main { height: 100%; overflow: hidden; display: flex; flex-direction: column; mi
 @keyframes toastIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
 @keyframes toastOut { to { opacity: 0; transform: translateX(20px); } }
 .toast.leaving { animation: toastOut .2s ease forwards; }
+/* ── update plan ── */
+.plan-box { width: 980px; max-width: 96vw; }
+#planModal { z-index: 210; }   /* details open from the every-game table: above it */
+.plan-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 6px 0 8px; }
+.plan-builds { color: var(--muted); font-size: 12px; }
+.plan-badge { font-size: 11px; font-weight: 700; padding: 2px 8px; border-radius: 999px; background: var(--panel3); white-space: nowrap; }
+.plan-error { color: #fff; background: var(--err); }
+.plan-ambiguous_path { color: #111; background: var(--warn); }
+.plan-v1_unavailable { color: var(--warn); border: 1px solid var(--warn); background: transparent; }
+.plan-first_archive { color: #fff; background: var(--accent); }
+.plan-plan_ready { color: #111; background: var(--ok); }
+.plan-up_to_date { color: var(--ok); }
+.plan-skipped { color: var(--muted); }
+.plan-note { font-size: 12px; margin: 6px 0; color: var(--muted); }
+.plan-note.plan-warn { color: var(--warn); }
+.plan-tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 8px; margin: 8px 0; }
+.plan-tile { background: var(--panel2); border: 1px solid var(--line); border-radius: 10px; padding: 8px 10px; }
+.plan-tile b { display: block; font-size: 16px; }
+.plan-tile span { font-size: 11px; color: var(--muted); }
+.plan-tile.plan-dl b { color: var(--accent); }
+.plan-tile.plan-repair b, .plan-tile.plan-amb b { color: var(--warn); }
+.plan-tabs { display: flex; gap: 6px; flex-wrap: wrap; margin: 10px 0 6px; }
+.plan-tab { background: var(--panel2); border: 1px solid var(--line); color: var(--text); border-radius: 8px; padding: 4px 10px; font-size: 12px; cursor: pointer; }
+.plan-tab.active { border-color: var(--accent); color: var(--accent); }
+.plan-filter { width: 100%; box-sizing: border-box; margin: 4px 0 8px; }
+.plan-list { max-height: 42vh; overflow: auto; border: 1px solid var(--line); border-radius: 8px; }
+.plan-files, .plan-all { width: 100%; border-collapse: collapse; font-size: 12px; }
+.plan-files th, .plan-files td, .plan-all th, .plan-all td { padding: 4px 8px; border-bottom: 1px solid var(--line); text-align: left; }
+.plan-files th, .plan-all th { position: sticky; top: 0; background: var(--panel); }
+.plan-files td.pc-path { word-break: break-all; }
+.plan-all tbody tr { cursor: pointer; }
+.plan-all tbody tr:hover { background: var(--panel2); }
+.plan-sort { cursor: pointer; color: var(--accent); }
+.plan-more, .plan-empty { padding: 8px; font-size: 12px; color: var(--muted); }
+.plan-dim { color: var(--muted); }
+.plan-checking { padding: 24px 4px; color: var(--muted); display: flex; gap: 10px; align-items: center; }
+.plan-spin { width: 14px; height: 14px; border: 2px solid var(--line); border-top-color: var(--accent); border-radius: 50%; animation: plan-spin 0.8s linear infinite; }
+@keyframes plan-spin { to { transform: rotate(360deg); } }
+.plan-progress { margin: 6px 0 10px; }
+.plan-bar { height: 6px; background: var(--panel3); border-radius: 3px; overflow: hidden; }
+.plan-bar i { display: block; height: 100%; background: var(--accent); transition: width .2s; }
+.plan-prog-txt { font-size: 12px; color: var(--muted); margin-top: 4px; }
+.plan-filters { display: flex; gap: 6px; flex-wrap: wrap; margin: 6px 0; }
 </style>
 </head>
 <body>
@@ -858,6 +901,7 @@ main { height: 100%; overflow: hidden; display: flex; flex-direction: column; mi
   <div class="tb-nav">
     <button class="tb-btn" id="tbSync" data-cmd><span>⟳</span> <span data-i18n="tb.sync">Synchronizuj bibliotekę</span></button>
     <button class="tb-btn" id="tbUpdateAll" data-cmd><span>⟳</span> <span data-i18n="tb.updateAll">Aktualizuj wszystko</span></button>
+    <button class="tb-btn" id="tbPlanAll" onclick="openPlanAll()"><span>📋</span> <span data-i18n="tb.planAll">Sprawdź plan</span></button>
     <button class="tb-btn" id="tbLog" onclick="togglePanel(true)"><span>🗒</span> <span data-i18n="tb.log">Dziennik</span></button>
     <button class="tb-btn" onclick="openSettings()"><span>⚙</span> <span data-i18n="tb.settings">Ustawienia</span></button>
     <button class="tb-btn login" id="tbLogin" onclick="openSettings('account')"><span id="tbLoginDot">◌</span> <span id="tbLoginTxt" data-i18n="tb.notLoggedIn">Nie zalogowano</span></button>
@@ -1152,6 +1196,64 @@ main { height: 100%; overflow: hidden; display: flex; flex-direction: column; mi
       </div>
     </div>
   </div>
+  <!-- Update plan of one game (hidden) -->
+  <div class="settings-overlay" id="planModal" style="display:none" onclick="if(event.target===this)closePlan()">
+    <div class="settings-box plan-box">
+      <div class="dl-head">
+        <div>
+          <div class="dl-kicker" data-i18n="plan.kicker">Plan aktualizacji archiwum</div>
+          <h3 id="planTitle">—</h3>
+        </div>
+        <button class="icon-btn" onclick="closePlan()" title="Esc">✕</button>
+      </div>
+      <div id="planSummary"></div>
+      <div id="planAmbiguous"></div>
+      <div id="planDetail" style="display:none">
+        <div id="planUniqueToggle"></div>
+        <div id="planTabs"></div>
+        <input class="plan-filter" id="planFilter" data-i18n-ph="plan.filterPh" placeholder="Filtruj po ścieżce…">
+        <div class="plan-list" id="planList"></div>
+      </div>
+      <div class="dl-foot">
+        <div style="display:flex; gap:8px">
+          <button class="btn btn-xs" id="planRecheck" onclick="openPlan(_plan.gid, true)" data-i18n="plan.recheck">⟳ Sprawdź ponownie</button>
+        </div>
+        <div style="display:flex; gap:8px">
+          <button class="btn primary" id="planUpdate" onclick="planRunUpdate()" data-i18n="plan.update">⟳ Aktualizuj</button>
+          <button class="btn" onclick="closePlan()" data-i18n="plan.close">Zamknij</button>
+        </div>
+      </div>
+    </div>
+  </div>
+  <!-- Update plan of every game (hidden) -->
+  <div class="settings-overlay" id="planAllModal" style="display:none" onclick="if(event.target===this)closePlanAll()">
+    <div class="settings-box plan-box">
+      <div class="dl-head">
+        <div>
+          <div class="dl-kicker" data-i18n="plan.kicker">Plan aktualizacji archiwum</div>
+          <h3 data-i18n="plan.allTitle">Wszystkie gry</h3>
+        </div>
+        <button class="icon-btn" onclick="closePlanAll()" title="Esc">✕</button>
+      </div>
+      <div id="planAllProgress"></div>
+      <div class="plan-filters" id="planAllFilters">
+        <button class="plan-tab active" data-filter="all" data-i18n="plan.f.all">wszystkie</button>
+        <button class="plan-tab" data-filter="updates" data-i18n="plan.f.updates">tylko z aktualizacją</button>
+        <button class="plan-tab" data-filter="errors" data-i18n="plan.f.errors">tylko błędy</button>
+        <button class="plan-tab" data-filter="ambiguous" data-i18n="plan.f.ambiguous">tylko ambiguous</button>
+        <button class="plan-tab" data-filter="skipped" data-i18n="plan.f.skipped">tylko pominięte</button>
+      </div>
+      <div class="plan-list" id="planAllTable"></div>
+      <div class="dl-foot">
+        <div class="plan-note" data-i18n="plan.allNote">Sprawdzanie nie pobiera chunków i nie uruchamia aktualizacji.</div>
+        <div style="display:flex; gap:8px">
+          <button class="btn primary" id="planAllStart" onclick="startPlanAll()" data-i18n="plan.allStart">▶ Sprawdź wszystkie gry</button>
+          <button class="btn btn-xs stop" id="planAllStop" style="display:none" onclick="call('cancel_plan_all')" data-i18n="plan.allStop">■ Przerwij</button>
+          <button class="btn" onclick="closePlanAll()" data-i18n="plan.close">Zamknij</button>
+        </div>
+      </div>
+    </div>
+  </div>
   <!-- GOG login modal (hidden) -->
   <div class="settings-overlay" id="gogModal" style="display:none">
     <div class="settings-box" style="width:480px">
@@ -1237,6 +1339,7 @@ main { height: 100%; overflow: hidden; display: flex; flex-direction: column; mi
 
   <!-- SGDB art override end -->
 
+<script src="plan_view.js"></script>
 <script>
 /* ════════════════════════════════════════
    STATE
@@ -1254,6 +1357,13 @@ const I18N = {
     'app.title':'GOG Library','sidebar.loading':'Ładowanie…',
     'tb.subtitle':'Zarządzaj swoją biblioteką GOG lokalnie','tb.searchPh':'Szukaj w bibliotece…',
     'tb.sync':'Synchronizuj bibliotekę','tb.updateAll':'Aktualizuj wszystko','tb.log':'Dziennik','tb.settings':'Ustawienia',
+    'tb.planAll':'Sprawdź plan','btn.plan':'📋 Plan aktualizacji','plan.kicker':'Plan aktualizacji archiwum',
+    'plan.filterPh':'Filtruj po ścieżce…','plan.recheck':'⟳ Sprawdź ponownie','plan.update':'⟳ Aktualizuj',
+    'plan.close':'Zamknij','plan.allTitle':'Wszystkie gry','plan.f.all':'wszystkie','plan.f.updates':'tylko z aktualizacją',
+    'plan.f.errors':'tylko błędy','plan.f.ambiguous':'tylko ambiguous','plan.f.skipped':'tylko pominięte',
+    'plan.allNote':'Sprawdzanie nie pobiera chunków i nie uruchamia aktualizacji.','plan.allStart':'▶ Sprawdź wszystkie gry',
+    'plan.allStop':'■ Przerwij','plan.noSaved':'Brak zapisanego planu — kliknij „Sprawdź ponownie”.',
+    'plan.running':'Sprawdzanie już trwa.',
     'tb.notLoggedIn':'Nie zalogowano','tb.loggedIn':'Zalogowano',
     'filter.all':'Wszystkie','filter.installed':'Zainstalowane','filter.downloaded':'Pobrane',
     'sort.title':'Alfabetycznie','sort.size':'Rozmiar (pobrane)','sort.year':'Rok wydania','sort.release':'Data wydania','sort.rating':'Ocena GOG','sort.purchase':'Data zakupu','sort.status':'Status',
@@ -1338,6 +1448,13 @@ const I18N = {
     'app.title':'GOG Library','sidebar.loading':'Loading…',
     'tb.subtitle':'Manage your GOG library locally','tb.searchPh':'Search the library…',
     'tb.sync':'Sync library','tb.updateAll':'Update all','tb.log':'Log','tb.settings':'Settings',
+    'tb.planAll':'Check plan','btn.plan':'📋 Update plan','plan.kicker':'Archive update plan',
+    'plan.filterPh':'Filter by path…','plan.recheck':'⟳ Check again','plan.update':'⟳ Update',
+    'plan.close':'Close','plan.allTitle':'Every game','plan.f.all':'all','plan.f.updates':'with an update only',
+    'plan.f.errors':'errors only','plan.f.ambiguous':'ambiguous only','plan.f.skipped':'skipped only',
+    'plan.allNote':'Checking downloads no chunks and starts no update.','plan.allStart':'▶ Check every game',
+    'plan.allStop':'■ Stop','plan.noSaved':'No saved plan — click “Check again”.',
+    'plan.running':'A check is already running.',
     'tb.notLoggedIn':'Not logged in','tb.loggedIn':'Logged in',
     'filter.all':'All','filter.installed':'Installed','filter.downloaded':'Downloaded',
     'sort.title':'Alphabetical','sort.size':'Size (downloaded)','sort.year':'Release year','sort.release':'Release date','sort.rating':'GOG rating','sort.purchase':'Purchase date','sort.status':'Status',
@@ -1442,6 +1559,7 @@ function applyI18n(root) {
 
 async function setLang(lang, persist) {
   LANG = (lang === 'en') ? 'en' : 'pl';
+  if (window.PlanView) PlanView.setLang(LANG);
   applyI18n();
   if (typeof renderMain === 'function' && games.length) renderMain();
   if (typeof updateCfg === 'function') updateCfg();
@@ -1506,6 +1624,8 @@ window.handleActivity = function(msg) {
     renderQueue(msg.items || []);
   } else if (msg.type === 'migration') {
     renderMigration(msg);
+  } else if (msg.type === 'plan_all_progress' || msg.type === 'plan_all_done') {
+    onPlanAllEvent(msg);
   } else if (msg.type === 'migration_report') {
     renderMigrationReport(msg.report || {});
   }
@@ -2524,6 +2644,10 @@ function gameActionButtons(g) {
 
   if (g.downloaded || (ARCHIVE_MODE && g.archived))
     btns.push(`<button class="btn"${dis} id="updateBtn">${t('btn.update')}</button>`);
+  // Update plan: archive v2 only (v1 has no file plan — shown in "Check plan" as v1_unavailable).
+  // Planning downloads no chunk, so it stays clickable while another task runs.
+  if (g.archive && g.archive.state === 'complete' && Number(g.archive.content_system || 2) !== 1)
+    btns.push(`<button class="btn" id="planBtn">${t('btn.plan')}</button>`);
   btns.push(`<button class="btn"${dis} id="syncBtn">${t('btn.syncGame')}</button>`);
   return `<div class="hero-buttons">${btns.join('')}</div>`;
 }
@@ -2730,6 +2854,9 @@ function renderMain() {
   const arcDlcBtn = document.getElementById('archiveDlcBtn');
   if (arcDlcBtn) arcDlcBtn.onclick = () => openArchiveModal(g, 'dlc');
 
+  const planBtn = document.getElementById('planBtn');
+  if (planBtn) planBtn.onclick = () => openPlan(String(g.id), true);
+
   const updateBtn = document.getElementById('updateBtn');
   if (updateBtn) updateBtn.onclick = () => {
     if (ARCHIVE_MODE) {
@@ -2789,6 +2916,8 @@ document.addEventListener('keydown', e => {
   }
   if (e.key === 'Escape') {
     if (paletteOpen) { closePalette(); return; }
+    if (document.getElementById('planModal').style.display !== 'none') { closePlan(); return; }
+    if (document.getElementById('planAllModal').style.display !== 'none') { closePlanAll(); return; }
     if (document.getElementById('actPanel').classList.contains('open')) { togglePanel(false); return; }
   }
   if (!paletteOpen) return;
@@ -3383,6 +3512,165 @@ async function boot() {
 }
 
 window.addEventListener('pywebviewready', boot);
+
+/* ════════════════════════════════════════
+   UPDATE PLAN — binding only: Api calls, events, DOM. Rendering: plan_view.js (PlanView).
+════════════════════════════════════════ */
+let _plan = {gid: null, kind: 'changed', query: '', seq: 0, summary: null, picked: false, unique: true};
+let _planAll = {plans: [], run: null, current: '', filter: 'all', sort: '', running: false};
+
+async function openPlan(gid, compute) {
+  const g = games.find(x => String(x.id) === String(gid));
+  const seq = ++_plan.seq;
+  _plan.gid = String(gid); _plan.kind = 'changed'; _plan.query = ''; _plan.summary = null; _plan.picked = false;
+  _plan.unique = true;                                   // unique paths by default
+  document.getElementById('planTitle').textContent = g ? g.title : String(gid);
+  document.getElementById('planFilter').value = '';
+  document.getElementById('planAmbiguous').innerHTML = '';
+  document.getElementById('planDetail').style.display = 'none';
+  document.getElementById('planUpdate').style.display = g && g.archived ? '' : 'none';
+  document.getElementById('planModal').style.display = 'flex';
+  if (compute) {
+    document.getElementById('planSummary').innerHTML = PlanView.checkingView();
+    let r;
+    try { r = await call('plan_update', _plan.gid); } catch (e) { r = {ok: false, error: String(e)}; }
+    if (seq !== _plan.seq) return;                       // another plan was opened meanwhile
+    if (!r.ok) {
+      document.getElementById('planSummary').innerHTML =
+        PlanView.summaryView({ui_state: 'error', reason: r.error || '?'});
+      return;
+    }
+    _plan.summary = r.plan;
+    document.getElementById('planSummary').innerHTML = PlanView.summaryView(r.plan);
+  } else {
+    document.getElementById('planSummary').innerHTML = '';
+  }
+  await loadPlanList(seq);
+}
+
+/* Details of THIS game only, one page (≤ 500 rows), when its plan window is open. */
+async function loadPlanList(seq) {
+  seq = seq || _plan.seq;
+  let r;
+  try { r = await call('get_update_plan', _plan.gid, _plan.kind, _plan.query, 0, PlanView.LIMIT, _plan.unique); }
+  catch (e) { r = {ok: false, error: String(e)}; }
+  if (seq !== _plan.seq) return;
+  if (!r.ok) {
+    if (!_plan.summary) document.getElementById('planSummary').innerHTML =
+      `<div class="plan-note">${esc(t('plan.noSaved'))}</div>`;
+    return;
+  }
+  if (!_plan.summary) {
+    _plan.summary = r.summary;
+    document.getElementById('planSummary').innerHTML = PlanView.summaryView(r.summary);
+  }
+  if (!_plan.picked) {                                   // first answer: open on the first non-empty list
+    _plan.picked = true;
+    const k = PlanView.defaultKind(r.list_sizes);
+    if (k !== _plan.kind) { _plan.kind = k; return loadPlanList(seq); }
+  }
+  document.getElementById('planAmbiguous').innerHTML = PlanView.ambiguousView(r.ambiguous);
+  const hasLists = Object.values(r.list_sizes || {}).some(n => n > 0);
+  document.getElementById('planDetail').style.display = hasLists ? '' : 'none';
+  document.getElementById('planUniqueToggle').innerHTML = PlanView.entriesToggleView(_plan.unique);
+  document.getElementById('planTabs').innerHTML = PlanView.tabsView(r.list_sizes, _plan.kind);
+  document.getElementById('planList').innerHTML = PlanView.fileListView(r);
+}
+
+document.getElementById('planTabs').addEventListener('click', e => {
+  const b = e.target.closest('[data-kind]');
+  if (!b) return;
+  _plan.picked = true;
+  _plan.kind = b.getAttribute('data-kind');
+  loadPlanList();
+});
+document.getElementById('planUniqueToggle').addEventListener('click', e => {
+  const b = e.target.closest('[data-unique]');
+  if (!b) return;
+  _plan.unique = b.getAttribute('data-unique') === '1';
+  loadPlanList();
+});
+let _planFilterTimer = null;
+document.getElementById('planFilter').addEventListener('input', e => {
+  clearTimeout(_planFilterTimer);
+  _planFilterTimer = setTimeout(() => { _plan.query = e.target.value.trim(); loadPlanList(); }, 250);
+});
+
+function closePlan() {
+  _plan.seq++;                                           // drop answers still on their way
+  document.getElementById('planModal').style.display = 'none';
+}
+
+/* The existing update, unchanged — only when the user clicks it. */
+function planRunUpdate() {
+  const g = games.find(x => String(x.id) === String(_plan.gid));
+  if (!g) return;
+  closePlan();
+  if (!confirm(t('mig.confirm', {n: 1}) + `\n\n"${g.title}"`)) return;
+  runCmd(() => call('update_game', String(g.id)), refreshAll, `archiwum: ${g.title}…`);
+}
+
+async function openPlanAll() {
+  document.getElementById('planAllModal').style.display = 'flex';
+  let r;
+  try { r = await call('get_update_plans'); } catch (e) { r = {ok: false}; }
+  if (r && r.ok) {
+    _planAll.plans = r.plans || []; _planAll.run = r.run || null; _planAll.running = !!r.running;
+  }
+  renderPlanAll();
+}
+
+function renderPlanAll() {
+  const run = _planAll.run;
+  document.getElementById('planAllProgress').innerHTML = run && run.total ? PlanView.progressView(run, _planAll.current) : '';
+  document.getElementById('planAllTable').innerHTML =
+    PlanView.planAllView(_planAll.plans, {filter: _planAll.filter, sort: _planAll.sort});
+  document.getElementById('planAllStart').disabled = _planAll.running;
+  document.getElementById('planAllStop').style.display = _planAll.running ? '' : 'none';
+  document.querySelectorAll('#planAllFilters [data-filter]').forEach(b =>
+    b.classList.toggle('active', b.getAttribute('data-filter') === _planAll.filter));
+}
+
+async function startPlanAll() {
+  let r;
+  try { r = await call('plan_update_all'); } catch (e) { r = {ok: false, error: String(e)}; }
+  if (!r.ok) { toast(r.error || t('plan.running'), 'err'); return; }
+  _planAll.running = true;
+  _planAll.run = {total: r.total, done: 0, errors: 0, finished: null};
+  renderPlanAll();
+}
+
+function onPlanAllEvent(msg) {
+  _planAll.run = {total: msg.total, done: msg.done, errors: msg.errors,
+                  finished: msg.type === 'plan_all_done' ? (msg.finished || true) : null, cancelled: msg.cancelled};
+  _planAll.current = msg.current || '';
+  if (msg.last) _planAll.plans = PlanView.mergePlan(_planAll.plans, msg.last);
+  if (msg.type === 'plan_all_done') _planAll.running = false;     // nothing is started afterwards
+  if (document.getElementById('planAllModal').style.display !== 'none') renderPlanAll();
+}
+
+document.getElementById('planAllFilters').addEventListener('click', e => {
+  const b = e.target.closest('[data-filter]');
+  if (!b) return;
+  _planAll.filter = b.getAttribute('data-filter');
+  renderPlanAll();
+});
+document.getElementById('planAllTable').addEventListener('click', e => {
+  if (e.target.closest('[data-sort]')) {
+    _planAll.sort = _planAll.sort === 'download' ? '' : 'download';
+    renderPlanAll();
+    return;
+  }
+  const tr = e.target.closest('tr[data-pid]');
+  if (!tr) return;
+  const pid = tr.getAttribute('data-pid');
+  const g = games.find(x => String((x.product || {}).id || x.id) === pid) || {id: pid};
+  openPlan(String(g.id), false);                         // saved plan: details of this one game only
+});
+
+function closePlanAll() {
+  document.getElementById('planAllModal').style.display = 'none';
+}
 </script>
 </body>
 </html>

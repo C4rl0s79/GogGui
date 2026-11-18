@@ -6,7 +6,67 @@ wersjonowanie wg [SemVer](https://semver.org/lang/pl/).
 
 ## [Unreleased]
 
+### Dodano
+- **Plan aktualizacji archiwum przed pobieraniem (etap B, część 1: silnik i endpoint `plan_update`).**
+  `depot_archive.diff_manifests` porównuje dwa manifesty depotu plik po pliku. Kluczem jest ścieżka po normalizacji,
+  bez rozróżniania wielkości liter. Plik jest niezmieniony tylko wtedy, gdy zgadza się rozmiar, MD5 całego pliku
+  (porównywane, gdy obie strony je mają) i pełna kolejność `compressedMd5` chunków. Sama zmiana kolejności chunków daje
+  `changed` z `layout_changed`. Kontener małych plików (SFC) jest jednostką pobierania, a pliki w nim jednostką
+  raportu. Zmieniony `sfcRef` przy tym samym kontenerze jest zgłaszany jako niespójność manifestu. Metadane buildu GOG
+  v2 nie mają identyfikatora ani nazwy depotu, a ten sam zestaw pól powtarza się w obrębie buildu (155 razy na 60
+  buildów w archiwum), więc `diff_depot_groups` porównuje grupy depotów po pełnym kluczu: produkt, platforma,
+  generacja, języki, `osBitness`, `isGogDepot`. Grupa tylko w nowym buildzie to `depot_added`, tylko w starym
+  `depot_removed`. Ta sama ścieżka z różną treścią w jednej grupie jest zgłaszana (`ambiguous_path`), bez zgadywania.
+  `plan_update(game_id)` pobiera tylko meta buildu i manifesty (trzymane w pamięci, bez zapisu do archiwum), żadnego
+  chunka. Ten sam build i zakres oznacza brak pobierania manifestów. Dostępność chunka sprawdzana jest w całym
+  archiwum. Wynik: podsumowanie w `_depots/exchange/status.json` (`update_plans`), listy plików
+  w `_depots/exchange/plans/<pid>.json` (bez listy niezmienionych, gdy nic się nie zmieniło). Zapis atomowy pod
+  blokadą. Gry v1 dostają stan `v1_unavailable` (etap F).
+  Każdy chunk nowego buildu jest sprawdzany na dysku, tak jak robi to sama aktualizacja (16 wątków). Zaufanie do
+  kompletnego rekordu ukrywało chunk utracony z archiwum, który aktualizacja potem pobierała (wykrył to test
+  zgodności planu z aktualizacją).
+- **Plan aktualizacji w interfejsie (etap B, część 2).**
+  - Przycisk „📋 Plan aktualizacji” przy grze z archiwum v2, osobny od „Aktualizuj”. Okno pokazuje: stan, liczby
+    plików, do pobrania, ponownie użyte, do naprawy (po plikach i unikalnie), grupy depotów i grupy niejednoznaczne.
+    Zakładki: zmienione, dodane, usunięte, do naprawy, z filtrem po ścieżce i najwyżej 500 pozycjami.
+  - Przycisk „Sprawdź plan” na pasku: wszystkie gry po kolei w osobnym wątku, poza kolejką pobierania, z postępem
+    i przerwaniem. Tabela z sortowaniem po „do pobrania” i filtrami (z aktualizacją / błędy / ambiguous / pominięte).
+    Gry v1 są w tabeli jako `v1_unavailable` (aktualizacja pobiera cały depot).
+  - Kolejność stanów: error > ambiguous_path > v1_unavailable > first_archive > plan_ready > up_to_date > skipped.
+    `skipped` nie jest błędem.
+  - Start aktualizacji gry (lub „Aktualizuj wszystko”) oznacza jej plan, także liczony w tej chwili, jako
+    nieaktualny. Planowania innych gier to nie wstrzymuje.
+  - Nowe endpointy: `get_update_plan` (jedna strona listy jednej gry), `get_update_plans` (tylko `status.json`),
+    `plan_update_all`, `cancel_plan_all`. Przerwany przebieg jest widoczny jako przerwany (`plan_run.finished`
+    puste).
+  - Widok (`assets/plan_view.js`) nie wywołuje Api, ma testy w Node (`node --test tests/js/plan_view.test.mjs`).
+    Plik jest dołączany do pakietu (`GOGManager.spec`).
+
 ### Poprawiono
+- **Plan: stan archiwum rozpoznawany przed porównaniem, limity czasu.**
+  - Gra bez żadnego rekordu w archiwum (także sam `meta.json` albo sam manifest) dostaje „Plan dla nowej
+    archiwizacji” (`first_archive`). Ustawienie `plan_first_archive_mode`:
+    - `"full"` (domyślne): sprawdzany jest każdy chunk. Plan zgadza się z archiwizacją co do chunka i bajta, także
+      gdy inna gra lub inne wydanie ma już część danych. Przykład: Oblivion GOTY Deluxe przy archiwum z samym GOTY
+      daje 59 MB do pobrania; tryb zależności pokazałby 5,55 GB.
+    - `"dependencies_only"`: sprawdzane są tylko chunki wspólnych zależności (redist), resztę gry plan liczy jako
+      brakującą. Notka w UI: inne gry lub wydania mogą już zawierać część danych.
+    Pomiar na dysku lokalnym: 34 347 chunków Morrowind w 0,7 s, 30 gier (118 662 chunki) w 4,4 s, bez różnicy przy
+    2–16 wątkach. Domyślna liczba wątków zostaje bez zmian. Skrypt pomiarowy: `tests/perf_plan.py`.
+  - Rekord niekompletny daje osobny stan `incomplete_archive` („archiwum niekompletne”): każdy chunk jest
+    sprawdzany, a wynik równa się temu, co pobierze dokończenie archiwizacji. Nic nie jest usuwane. Stan nigdy nie
+    jest traktowany jako aktualny ani jako pierwsza archiwizacja.
+  - Limity: meta i manifesty jednej gry 60 s, cały plan gry `plan_timeout_seconds` (domyślnie 300 s; 0, wartość
+    ujemna lub nieliczbowa oznacza 300 s). Chunki są sprawdzane partiami po 500, z terminem przed każdą partią.
+    Po przekroczeniu: `error` / `plan_timeout`, zapis w `status.json`, następna gra. Niezaczęte zadania partii są
+    anulowane, wątków się nie zabija, a spóźniony wynik nie jest zapisywany.
+  - Tabela „Sprawdź plan”: „—” zamiast zer dla gier, których manifestów nie porównywano.
+  - Liczby plików jako unikalne ścieżki i obok wszystkie wpisy depotów (Morrowind: „dodane: 21 408 unikalnych / 63 507
+    wpisów”; ta sama ścieżka występuje w depocie każdego języka). Szczegóły mają przełącznik „Unikalne ścieżki” /
+    „Wszystkie wpisy depotów”, domyślnie unikalne.
+  - Okno szczegółów otwierane z tabeli wszystkich gier jest nad nią (wcześniej otwierało się pod spodem), a plan
+    otwiera się na pierwszej niepustej liście (nowa archiwizacja: „dodane”, zamiast pustej „zmienione”).
+
 - **Gry, których nigdy nie pobierano, nie są już oznaczane jako „Pobrano”.** Od 1.5.0 „Aktualizuj wszystko” zapisuje
   metadane każdej posiadanej gry (`product_<slug>.json`, `galaxy_<slug>.json`, `game-details.json`, ikona, logo,
   okładka, tło) do folderu `<instalatory>/<slug>/`, a skan pobranych gier liczył każdy plik w katalogu głównym folderu
@@ -32,12 +92,14 @@ atomowy (plik tymczasowy + zamiana).
 | Etap | Zakres | Stan |
 |---|---|---|
 | A | **Stan gier z konta GOG** (lista posiadanych, nie foldery na dysku): każda gra ma jeden stan z powodem — w archiwum i aktualna / nowa / nowszy build / do naprawy / pominięta (brak buildu Windows, tylko goodies, błąd — z treścią). Zapis w `_depots/exchange/status.json` (opisany format), żeby serwer EmuStart i GOG Manager pokazywały te same liczby | do zrobienia |
-| B | **Plan aktualizacji przed pobieraniem** (tylko zapytania o buildy i nagłówki, bez danych): różnica manifestów starego i nowego buildu na poziomie plików (dodane / zmienione / usunięte, bajty) i rozmiar nowych chunków; podsumowanie „N nowych, M aktualizacji (X GB), K do naprawy, P pominiętych”. Pobierane są tylko brakujące chunki (niezmienione pliki i ich fragmenty mają te same chunki — już dziś) | do zrobienia |
+| B | **Plan aktualizacji przed pobieraniem** (tylko zapytania o buildy i nagłówki, bez danych): różnica manifestów starego i nowego buildu na poziomie plików (dodane / zmienione / usunięte, bajty) i rozmiar nowych chunków; podsumowanie „N nowych, M aktualizacji (X GB), K do naprawy, P pominiętych”. Pobierane są tylko brakujące chunki (niezmienione pliki i ich fragmenty mają te same chunki — już dziś) | zrobione (silnik, endpointy, UI, plan wszystkich gier) |
 | C | **Pominięte z datą ponownego sprawdzenia** (7 dni) zamiast zapytania o build przy każdym przebiegu | do zrobienia |
 | D | **4–8 równoczesnych pobrań** (ustalenie od początku projektu): pula połączeń wspólna dla kilku gier naraz (pobieranie kolejnej gry, gdy poprzednia się weryfikuje); zatwierdzenie i weryfikacja nadal atomowe dla każdej gry | do zrobienia |
 | E | **Bez instalatorów w aktualizacji**: „Aktualizuj wszystko” w trybie archiwum nie pobiera instalatorów ani łatek i nie migruje — zostają depoty i extras (bez łatek) | do zrobienia |
 | F | **Gry v1 (main.bin): tylko zmienione pliki** — pliki z tym samym MD5 co w poprzednim przerobionym manifeście biorą jego chunki, pobierane są tylko nowe i zmienione | do zrobienia |
 | G | **„Napraw” dla każdej gry z głównej listy** (dziś tylko w oknie instalacji z archiwum); lista „do naprawy” także z raportu serwera EmuStart (`_depots/exchange/archive-check.json`, etap 12 w `EmustartNXT/emustart/CHANGELOG.md` — sprawdzanie archiwum w tle robi serwer, bo działa stale) | do zrobienia |
+| H | **Indeks chunków / cache planu** (backlog, warunkowo): lokalny indeks `compressedMd5` → chunk, aktualizowany przy archiwizacji, GC i weryfikacji. Przywróciłby dokładny plan `first_archive` (dziś sprawdza tylko zależności) i przyspieszył `incomplete_archive`. Do wdrożenia tylko wtedy, gdy pomiary na dysku lokalnym (serwer EmuStart) pokażą realną potrzebę | backlog |
+| I | **Folder z samym `extras/` i bezpieczne „Usuń installer”** (backlog): folder zawierający wyłącznie `extras/` nie może być klasyfikowany jako gra z instalatorem (dziś widok gry pokazuje wtedy „Uruchom instalator” i „Usuń installer”). „Usuń installer” nie może usuwać `extras/` ani metadanych czytanych przez serwer EmuStart (`product_<slug>.json`, `galaxy_<slug>.json`, `game-details.json`, grafiki) — dziś `delete_installer` usuwa cały folder gry. Przed usunięciem pokazać dokładną listę plików i katalogów do usunięcia | backlog |
 
 ## [1.6.1] - 2026-11-11
 

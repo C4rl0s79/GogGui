@@ -3,7 +3,7 @@ import sys
 import urllib.request, urllib.error, urllib.parse
 import hashlib, time, webbrowser, queue
 import xml.etree.ElementTree as ET
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor, as_completed, wait as _fut_wait
 from pathlib import Path
 import webview
 import depot_archive as DA
@@ -139,6 +139,13 @@ DEFAULT_SETTINGS: dict = {
     # without a GOG checksum, re-verify every archived chunk. OFF = trust what
     # was already verified (remembered file state, committed archive records).
     "deep_verify":  False,
+    # Parallel chunk lookups of the update plan (0 = auto: 4, or 2 when the archive is on a network path).
+    "plan_verify_workers": 0,
+    "plan_timeout_seconds": 300,         # one game's plan; 0 / negative / invalid → 300
+    # Plan of a game with nothing archived yet: "full" = every chunk looked up (exact, also when another game or
+    # edition already holds part of the data); "dependencies_only" = only shared redist chunks looked up.
+    "plan_first_archive_mode": "full",
+    "exchange_dir": "",                  # "" = <archive>/exchange (status.json, plans/) — GOGGUI_EXCHANGE_DIR wins
     # Persisted directories ("" = use the built-in defaults above)
     "json_dir":    "",
     "install_dir": "",
@@ -4434,6 +4441,608 @@ def _archive_scope(g: dict, langs, dlcs, box: dict) -> tuple:
     return rec, plan, build, meta, True
 
 
+# ── Update plan before downloading (stage 1): file-level difference between the archived build and GOG's
+# current one. Fetches only the build meta and the depot / dependency manifests (kept in memory — nothing is
+# written into the archive), never a chunk. Result: _depots/exchange/status.json (summaries, read by the UI and
+# the EmuStart server) + _depots/exchange/plans/<pid>.json (file lists).
+_EXCHANGE_LOCK = threading.Lock()
+PLAN_FORMAT = "goggui-update-plan"
+STATUS_FORMAT = "goggui-exchange-status"
+_NET_FS = {"nfs", "nfs4", "cifs", "smb3", "smbfs", "fuse.sshfs", "sshfs", "9p", "afs", "fuse.rclone"}
+
+
+def _exchange_dir() -> Path:
+    """Where status.json and plans/ go: GOGGUI_EXCHANGE_DIR (test / isolated runs), else the setting
+    exchange_dir, else <archive>/exchange. The plan writes nowhere else."""
+    env = os.environ.get("GOGGUI_EXCHANGE_DIR", "").strip()
+    if env:
+        return Path(env)
+    d = str(get_settings().get("exchange_dir") or "").strip()
+    return Path(d) if d else _archive_root() / "exchange"
+
+
+def _is_network_path(path: Path) -> bool:
+    """UNC path or a mapped network drive (Windows), or a network file system mount (Linux)."""
+    try:
+        s = str(Path(path).resolve() if not IS_WIN else Path(path))
+        if IS_WIN:
+            if s.startswith("\\\\") or s.startswith("//"):
+                return True
+            import ctypes
+            drive = Path(s).drive
+            return bool(drive) and ctypes.windll.kernel32.GetDriveTypeW(drive + "\\") == 4   # DRIVE_REMOTE
+        best, fs = "", ""
+        with open("/proc/mounts", encoding="utf-8") as fh:
+            for line in fh:
+                parts = line.split()
+                if len(parts) >= 3 and (s == parts[1] or s.startswith(parts[1].rstrip("/") + "/")) \
+                        and len(parts[1]) > len(best):
+                    best, fs = parts[1], parts[2]
+        return fs in _NET_FS
+    except Exception:
+        return False
+
+
+def _plan_workers() -> int:
+    """Parallel chunk lookups of the plan: setting plan_verify_workers (1–16), else 4 — 2 on a network path."""
+    try:
+        n = int(get_settings().get("plan_verify_workers") or 0)
+    except (TypeError, ValueError):
+        n = 0
+    if n > 0:
+        return max(1, min(16, n))
+    return 2 if _is_network_path(_archive_root()) else 4
+
+
+# ONE executor for every plan (a single game or 'Check plan' for all) — rebuilt only when the size changes.
+_PLAN_POOL = {"ex": None, "n": 0, "lock": threading.Lock()}
+
+
+def _plan_pool() -> ThreadPoolExecutor:
+    n = _plan_workers()
+    with _PLAN_POOL["lock"]:
+        if _PLAN_POOL["ex"] is None or _PLAN_POOL["n"] != n:
+            if _PLAN_POOL["ex"] is not None:
+                _PLAN_POOL["ex"].shutdown(wait=False)
+            _PLAN_POOL["ex"] = ThreadPoolExecutor(max_workers=n, thread_name_prefix="plan-stat")
+            _PLAN_POOL["n"] = n
+        return _PLAN_POOL["ex"]
+
+
+def _write_update_plan(pid: str, summary: dict, detail: dict | None) -> None:
+    """Atomic (tmp + fsync + os.replace) writes under one lock: the plan file first, then its summary merged
+    into status.json (other keys and other games' entries are kept)."""
+    ex = _exchange_dir()
+    with _EXCHANGE_LOCK:
+        if detail is not None:
+            DA._write_json(ex / "plans" / f"{pid}.json",
+                           {"format": PLAN_FORMAT, "version": 1, **summary, **detail})
+        st = DA._read_json(ex / "status.json")
+        if not isinstance(st, dict) or st.get("format") != STATUS_FORMAT:
+            st = {"format": STATUS_FORMAT, "version": 1}
+        st.setdefault("update_plans", {})[str(pid)] = summary
+        st["updated"] = _now()
+        DA._write_json(ex / "status.json", st)
+
+
+def _plan_old_groups(arc, rec: dict) -> list:
+    """Groups of the archived build: depot entries completed from its stored build meta (the record keeps only
+    manifest, productId and languages; the key also needs osBitness / isGogDepot)."""
+    pid, bid = str(rec["product_id"]), str(rec["build_id"])
+    gen = 1 if (rec.get("source") or {}).get("content_system") == 1 else 2
+    try:
+        full = {str(d.get("manifest")): d for d in arc.get_meta(pid, bid).get("depots") or []}
+    except DA.ArchiveError:
+        full = {}
+    out = []
+    for d in rec.get("depots") or []:
+        entry = {**full.get(str(d["manifest"]), {}), **d}
+        out.append((DA.depot_group_key(entry, rec.get("os") or _MY_OS, gen),
+                    [arc.get_manifest("depot", d["manifest"])]))
+    for d in rec.get("dependencies") or []:
+        out.append((DA.depot_group_key({"dependency": d["id"]}, "", 0), [arc.get_manifest("dep", d["manifest"])]))
+    return out
+
+
+_PLAN_TIMEOUT_DEFAULT = 300
+_PLAN_HTTP_TIMEOUT = 60          # build meta + every manifest of one game, together
+_PLAN_BATCH = 500                # chunk lookups per batch; the deadline is checked between batches
+_PLAN_CTX = threading.local()    # .deadline of the plan running in this thread
+
+
+class _PlanTimeout(Exception):
+    pass
+
+
+class _PlanDeadline:
+    def __init__(self, seconds: float):
+        self.seconds = float(seconds)
+        self.end = time.monotonic() + self.seconds
+
+    def left(self) -> float:
+        return self.end - time.monotonic()
+
+    def check(self, phase: str) -> None:
+        if self.left() <= 0:
+            raise _PlanTimeout(phase)
+
+
+def _plan_timeout_seconds() -> float:
+    """Setting plan_timeout_seconds; 0, negative or not a number → the default (300 s), never 'no limit'."""
+    try:
+        n = float(get_settings().get("plan_timeout_seconds"))
+    except (TypeError, ValueError):
+        n = 0
+    return n if n > 0 else float(_PLAN_TIMEOUT_DEFAULT)
+
+
+def _first_archive_mode() -> str:
+    """plan_first_archive_mode: "dependencies_only", anything else → "full" (the default)."""
+    return "dependencies_only" if get_settings().get("plan_first_archive_mode") == "dependencies_only" else "full"
+
+
+def _plan_stat(arc, md5s: list, dl: "_PlanDeadline") -> dict:
+    """compressedMd5 → present in the archive, looked up in batches of _PLAN_BATCH through the shared pool.
+    Deadline checked before each batch and while waiting for it; on expiry the batch's tasks not yet started
+    are cancelled (the next game must not wait for them) and the started ones finish in the background."""
+    out = {}
+    pool = _plan_pool()
+    for i in range(0, len(md5s), _PLAN_BATCH):
+        dl.check(f"chunki {i}/{len(md5s)}")
+        batch = md5s[i:i + _PLAN_BATCH]
+        futs = [pool.submit(arc.has_chunk, m) for m in batch]
+        _done, pending = _fut_wait(futs, timeout=max(0.0, dl.left()))
+        if pending:
+            for f in pending:
+                f.cancel()
+            raise _PlanTimeout(f"chunki {i}/{len(md5s)}")
+        out.update(zip(batch, (f.result() for f in futs)))
+    return out
+
+
+def _plan_update(g: dict) -> dict:
+    """Plan for one game → (summary, detail or None). GOG-side problems and timeouts become the summary's
+    state ("skipped" / "error" with error_kind plan_timeout) — never an exception.
+
+    The previous state of the archive decides the path, before any comparison:
+      complete record, same build + scope   → up_to_date (no manifest fetched)
+      complete record, other build          → full comparison, every chunk looked up (exact)
+      incomplete record only                → incomplete_archive: against an empty previous state, every
+                                               chunk looked up (exact: what finishing the archive downloads)
+      no record at all (meta / manifest only counts as none) → first_archive, by plan_first_archive_mode:
+                                               "full" (default): every chunk looked up — exact, also when another
+                                               game / edition already holds part of the data;
+                                               "dependencies_only": only the shared dependency (redist) chunks
+                                               looked up, every other chunk counted as missing"""
+    dl = getattr(_PLAN_CTX, "deadline", None) or _PlanDeadline(_plan_timeout_seconds())
+    pid = str(g["product"].get("id") or g["id"])
+    arc = _archive()
+    all_recs = arc.list_records(pid) if arc.exists() else []
+    recs = [r for r in all_recs if r.get("state") == DA.STATE_COMPLETE]
+    rec = max(recs, key=lambda r: str(r.get("verified") or r.get("created") or "")) if recs else None
+    partial = [r for r in all_recs if r.get("state") != DA.STATE_COMPLETE] if not rec else []
+    summary = {"product_id": pid, "title": g.get("title") or "", "generated": _now(),
+               "from_build": (rec or {}).get("build_id") or "", "from_version": (rec or {}).get("version_name") or "",
+               "to_build": "", "to_version": "", "state": "", "reason": ""}
+
+    def timed_out(exc):
+        return {**summary, "state": "error", "error_kind": "plan_timeout",
+                "reason": f"plan_timeout: {exc} (limit {dl.seconds:g} s)"}, None
+    http = _PlanDeadline(min(_PLAN_HTTP_TIMEOUT, max(0.0, dl.left())))
+
+    def before_http(what):
+        dl.check(what)
+        http.check(what)
+    try:
+        before_http("meta buildu")
+        try:
+            build, meta = _fetch_build_and_meta(pid)
+        except Exception as exc:
+            return {**summary, "state": "skipped", "reason": f"brak obsługiwanego buildu Galaxy ({_MY_OS}): {exc}"}, None
+        bid = str(build.get("build_id") or meta.get("buildId") or "")
+        summary.update(to_build=bid, to_version=build.get("version_name") or "")
+        scope_of = (rec or (partial[0] if partial else None) or {}).get("scope") or {}
+        st_langs = [_inst_lang(x) for x in (get_settings().get("update_langs") or ["en"])]
+        langs = st_langs + sorted(_build_lang_set(meta, pid)) + list(scope_of.get("languages") or [])
+        dlcs = set(scope_of.get("dlcs") or [])
+        owned = _owned_ids_cached()
+        if owned is not None:
+            dlcs |= {str(p.get("productId")) for p in meta.get("products") or []
+                     if str(p.get("productId")) != pid and str(p.get("productId")) in owned}
+        try:
+            plan = _plan_archive_scope(meta, pid, langs, dlcs)
+        except _GameSkip as exc:
+            return {**summary, "state": "skipped", "reason": str(exc)}, None
+        if rec and str(rec.get("build_id")) == bid:
+            ok, _ = DA.record_scope_covers(rec, plan["langs"], plan["dlcs"] + plan["dlc_meta_only"])
+            if ok:                             # same build, same scope: no manifest is fetched
+                return {**summary, "state": "up_to_date"}, None
+        if meta.get("contentSystem") == 1:
+            return {**summary, "state": "v1_unavailable",
+                    "reason": "build Galaxy v1 (main.bin) — plan plików niedostępny, aktualizacja pobiera cały depot"}, None
+        mode = "complete" if rec else "incomplete" if partial else "first"
+        try:
+            old_groups = _plan_old_groups(arc, rec) if rec else []
+            new_groups = []
+            for d in plan["depots"]:
+                before_http("manifesty")
+                new_groups.append((DA.depot_group_key(d, _MY_OS, 2), [_cdn_depot_manifest(d)]))
+            dep_issues, dep_groups = [], []
+            if plan["deps"]:
+                before_http("manifesty zależności")
+                mans, dep_missing = _dependency_manifests(plan["deps"])
+                dep_groups = [(DA.depot_group_key({"dependency": m["id"]}, "", 0), [m["man"]]) for m in mans]
+                dep_issues = [{"issue": "dependency_missing", "id": x} for x in sorted(dep_missing)]
+            new_groups += dep_groups
+        except _PlanTimeout:
+            raise
+        except Exception as exc:
+            return {**summary, "state": "error", "reason": f"manifesty: {exc}"}, None
+
+        def md5s(groups):
+            return sorted({(c.get("compressedMd5") or "").lower()
+                           for _, mans in groups for m in mans for c in DA.manifest_chunks(m)} - {""})
+        first_check = _first_archive_mode() if mode == "first" else ""
+        if first_check == "dependencies_only":
+            # Only the shared dependency (redist) chunks are looked up; the game's own chunks count as missing.
+            cache = _plan_stat(arc, md5s(dep_groups), dl)
+            have = lambda m: cache.get(m, False)
+        else:
+            # Every chunk looked up, as the update itself does (_archive_build → missing_chunks): trusting a
+            # record would hide a chunk lost from the archive, which the update then downloads.
+            cache = _plan_stat(arc, md5s(new_groups), dl)
+
+            def have(m: str) -> bool:
+                if m not in cache:
+                    cache[m] = arc.has_chunk(m)
+                return cache[m]
+        dl.check("porównanie")
+    except _PlanTimeout as exc:
+        return timed_out(exc)
+    r = DA.diff_depot_groups(old_groups, new_groups, have=have)
+    issues = r["issues"] + dep_issues
+    c = r["counts"]
+    any_change = bool(c["added"] or c["changed"] or c["removed"]
+                      or r["group_states"]["depot_added"] or r["group_states"]["depot_removed"]
+                      or r["total_download_bytes"])
+    state = {"first": "not_archived", "incomplete": "incomplete_archive"}.get(
+        mode, "update" if any_change else "up_to_date")
+    summary.update(state=state, counts=c, groups=r["group_states"], download_bytes=r["total_download_bytes"],
+                   download_chunks=r["download_chunks"], reused_bytes=r["reused_bytes"],
+                   issues=len(issues), files=f"plans/{pid}.json", checked_chunks=len(cache))
+    if mode == "first":
+        summary["first_archive_check"] = first_check
+        if first_check == "dependencies_only":
+            summary["shared_dependency_check"] = True
+        summary["reason"] = "Gra jest w bibliotece, ale nie ma pobranych danych depotu."
+    elif mode == "incomplete":
+        summary["reason"] = ("Część danych tej gry już jest w archiwum (rekord niekompletny) — "
+                             "plan pokazuje, co dokończy archiwizację; nic nie zostanie usunięte.")
+    groups = r["groups"]
+    if not any_change:                         # no changes: no list of unchanged files
+        groups = [{k: v for k, v in gr.items() if k != "unchanged"} for gr in groups]
+    return summary, {"groups": groups, "issues": issues}
+
+
+_UI_STATE = {"error": "error", "v1_unavailable": "v1_unavailable", "not_archived": "first_archive",
+             "incomplete_archive": "incomplete_archive",
+             "update": "plan_ready", "up_to_date": "up_to_date", "skipped": "skipped"}
+
+# A plan is "stale" once an update of its game starts: planning and updating the same game at once would
+# describe a build the archive is leaving. Epoch per product id, bumped by every update entry point.
+_PLAN_EPOCH: dict = {}
+_PLAN_EPOCH_LOCK = threading.Lock()
+
+
+def _plan_epoch(pid: str) -> int:
+    with _PLAN_EPOCH_LOCK:
+        return _PLAN_EPOCH.get(str(pid), 0) + _PLAN_EPOCH.get("*", 0)
+
+
+def _mark_plans_stale(pids=None) -> None:
+    """An update starts (pids None = every game): running plans of those games and plans already written are
+    marked stale. Never blocks planning of other games; never touches the update itself."""
+    with _PLAN_EPOCH_LOCK:
+        for p in (["*"] if pids is None else [str(x) for x in pids]):
+            _PLAN_EPOCH[p] = _PLAN_EPOCH.get(p, 0) + 1
+    try:
+        path = _exchange_dir() / "status.json"
+        with _EXCHANGE_LOCK:
+            st = DA._read_json(path)
+            plans = (st or {}).get("update_plans") if isinstance(st, dict) else None
+            if not plans:
+                return
+            hit = False
+            for pid, s in plans.items():
+                if (pids is None or pid in {str(x) for x in pids}) and not s.get("stale"):
+                    s["stale"] = True
+                    hit = True
+            if hit:
+                DA._write_json(path, st)
+    except Exception as exc:
+        log(f"plan stale mark: {exc}")
+
+
+def _plan_base_record(arc, pid: str):
+    """The record _plan_update compares against: the newest complete one of the product."""
+    recs = [r for r in (arc.list_records(pid) if arc.exists() else []) if r.get("state") == DA.STATE_COMPLETE]
+    return max(recs, key=lambda r: str(r.get("verified") or r.get("created") or "")) if recs else None
+
+
+def _repair_unique_bytes(arc, rec, groups: list) -> int:
+    """Unique compressed bytes of chunks lost from the archive under UNCHANGED files / SFC containers. An
+    unchanged file has the same chunks as in the archived build, so they are read from its manifests."""
+    need = [g for g in groups if any(e.get("missing_chunks") for e in g.get("unchanged") or [])
+            or ((g.get("sfc") or {}).get("state") == "unchanged" and (g.get("sfc") or {}).get("missing_bytes"))]
+    if not need or not rec:
+        return 0
+    old = {}
+    for key, mans in _plan_old_groups(arc, rec):
+        old.setdefault(DA._key_str(key), []).extend(mans)
+    lost = {}
+    for g in need:
+        merged, _ = DA.merge_manifests(old.get(DA._key_str(g["key"])) or [])
+        files, _ = DA._manifest_files(merged)
+        chunks = []
+        for e in g.get("unchanged") or []:
+            if e.get("missing_chunks"):
+                chunks += (files.get(DA._norm_path(e["path"])) or {}).get("chunks") or []
+        if (g.get("sfc") or {}).get("state") == "unchanged" and g["sfc"].get("missing_bytes"):
+            chunks += ((merged.get("depot") or {}).get("smallFilesContainer") or {}).get("chunks") or []
+        for c in chunks:
+            m = (c.get("compressedMd5") or "").lower()
+            if m and m not in lost and not arc.has_chunk(m):
+                lost[m] = int(c.get("compressedSize") or 0)
+    return sum(lost.values())
+
+
+def _unique_path_counts(groups: list) -> dict:
+    """Files per kind counted once per normalised path (several depot groups — e.g. one per language — ship the
+    same path; the summary's counts are depot entries). Unchanged: None when the plan kept no unchanged list."""
+    out = {}
+    for k in ("added", "changed", "removed", "unchanged"):
+        if k == "unchanged" and not any("unchanged" in g for g in groups):
+            out[k] = None
+            continue
+        out[k] = len({DA._norm_path(e.get("path")) for g in groups for e in g.get(k) or []})
+    return out
+
+
+def _plan_ui_fields(arc, summary: dict, detail: dict | None) -> dict:
+    """Summary fields the UI shows, derived from the plan (the plan itself is not recomputed)."""
+    groups = (detail or {}).get("groups") or []
+    issues = (detail or {}).get("issues") or []
+    amb = [i for i in issues if i.get("issue") == "ambiguous_path"]
+    repair = sum(int(e.get("missing_bytes") or 0) for g in groups for e in g.get("unchanged") or []
+                 if e.get("missing_chunks"))
+    repair += sum(int((g.get("sfc") or {}).get("missing_bytes") or 0) for g in groups
+                  if (g.get("sfc") or {}).get("state") == "unchanged")
+    st = summary.get("state")
+    ui = "error" if st == "error" else "ambiguous_path" if amb else _UI_STATE.get(st, st or "error")
+    rec = _plan_base_record(arc, summary["product_id"]) if repair else None
+    extra = {"counts_unique": _unique_path_counts(groups)} if detail is not None and summary.get("counts") else {}
+    return {**extra, "ui_state": ui, "repair_bytes": repair,
+            "repair_unique_bytes": _repair_unique_bytes(arc, rec, groups) if repair else 0,
+            "ambiguous_files": len(amb),
+            "ambiguous_groups": len({json.dumps(i.get("group"), sort_keys=True) for i in amb}),
+            "depot_groups": len(groups) if detail is not None else sum((summary.get("groups") or {}).values())}
+
+
+def _plan_and_store(g: dict) -> dict:
+    """Plan one game, add the UI fields, write it (status.json + plans/<pid>.json). Returns the summary."""
+    pid = str(g["product"].get("id") or g["id"])
+    epoch = _plan_epoch(pid)
+    t0 = time.monotonic()
+    limit = _plan_timeout_seconds()
+    box: dict = {}
+
+    def run():
+        _PLAN_CTX.deadline = _PlanDeadline(limit)
+        try:
+            box["r"] = _plan_update(g)
+        except BaseException as exc:           # handed to the caller below (SystemExit included)
+            box["e"] = exc
+    t = threading.Thread(target=run, name=f"plan-{pid}", daemon=True)
+    t.start()
+    # The plan stops itself at the deadline (cooperative checks); this wait is only the backstop for a call
+    # that ignores it — a small margin (≤ 1 s) so the cooperative timeout, with its phase, wins the race.
+    t.join(limit + min(1.0, 0.1 * limit))      # a late result is dropped, the thread is not killed
+    base = {"product_id": pid, "title": g.get("title") or "", "generated": _now()}
+    if t.is_alive():
+        log(f"plan_update {pid}: plan_timeout — wątek planu nie wrócił w {limit:g} s, idę dalej")
+        summary, detail = ({**base, "state": "error", "error_kind": "plan_timeout",
+                            "reason": f"plan_timeout: plan gry (limit {limit:g} s)"}, None)
+    elif "e" in box:
+        if not isinstance(box["e"], Exception):
+            raise box["e"]
+        log(f"plan_update {pid}: {box['e']}")
+        summary, detail = ({**base, "state": "error", "reason": str(box["e"])}, None)
+    else:
+        summary, detail = box["r"]
+    summary.update(_plan_ui_fields(_archive(), summary, detail))
+    summary["plan_seconds"] = round(time.monotonic() - t0, 3)
+    summary.setdefault("checked_chunks", 0)
+    if _plan_epoch(pid) != epoch:              # an update of this game started meanwhile
+        summary["stale"] = True
+    _write_update_plan(pid, summary, detail)
+    return summary
+
+
+def plan_update(game_id) -> dict:
+    """UI: the update plan of one game, before the update starts. Written to _depots/exchange/."""
+    g = next((x for x in scan_games() if x["id"] == str(game_id)), None)
+    if not g:
+        return {"ok": False, "error": "Gra nie znaleziona"}
+    try:
+        return {"ok": True, "plan": _plan_and_store(g)}
+    except Exception as exc:
+        log(f"plan_update write {game_id}: {exc}")
+        return {"ok": False, "error": f"zapis planu: {exc}"}
+
+
+_PLAN_KINDS = ("changed", "added", "removed", "repair")
+
+
+def _unique_rows(rows: list) -> list:
+    """One row per normalised path (first depot entry kept), with how many depot entries / which groups ship it.
+    A small files container stays one row per group (it is a per-depot unit, not a path)."""
+    seen: dict = {}
+    for e in rows:
+        k = ("<sfc>", e.get("group")) if e.get("sfc_container") else DA._norm_path(e.get("path"))
+        if k in seen:
+            seen[k]["entries"] += 1
+            if e.get("group") not in seen[k]["groups"]:
+                seen[k]["groups"].append(e.get("group"))
+        else:
+            seen[k] = {**e, "entries": 1, "groups": [e.get("group")]}
+    return list(seen.values())
+
+
+def get_update_plan(game_id, kind: str = "changed", query: str = "", offset: int = 0, limit: int = 500,
+                    unique: bool = True) -> dict:
+    """Details of ONE game's saved plan (plans/<pid>.json): one list, filtered by path, at most `limit` rows.
+    unique=True (default): one row per normalised path; False: every depot entry."""
+    g = next((x for x in scan_games() if x["id"] == str(game_id)), None)
+    pid = str((g or {}).get("product", {}).get("id") or game_id)
+    if kind not in _PLAN_KINDS:
+        return {"ok": False, "error": f"nieznana lista: {kind}"}
+    ex = _exchange_dir()
+    st = DA._read_json(ex / "status.json") or {}
+    summary = ((st.get("update_plans") or {}) if isinstance(st, dict) else {}).get(pid)
+    detail = DA._read_json(ex / "plans" / f"{pid}.json") if summary else None
+    if not summary:
+        return {"ok": False, "error": "brak zapisanego planu tej gry"}
+    groups = (detail or {}).get("groups") or []
+
+    def label(gr):
+        k = gr.get("key") or {}
+        return (f"zależność {k.get('id')}" if k.get("kind") == "dependency"
+                else f"{k.get('product_id')} · {','.join(k.get('languages') or []) or '*'}")
+    lists = {k: [] for k in _PLAN_KINDS}
+    for gr in groups:
+        lab = label(gr)
+        for k in ("changed", "added", "removed"):
+            lists[k] += [{**e, "group": lab} for e in gr.get(k) or []]
+        lists["repair"] += [{**e, "group": lab} for e in gr.get("unchanged") or [] if e.get("missing_chunks")]
+        sfc = gr.get("sfc") or {}
+        if sfc.get("state") == "unchanged" and sfc.get("missing_bytes"):
+            lists["repair"].append({"path": DA.SFC_UNIT, "sfc_container": True, "group": lab,
+                                    "chunks": sfc.get("chunks"), "missing_chunks": sfc.get("missing_chunks"),
+                                    "missing_bytes": sfc.get("missing_bytes")})
+    uniq = {k: _unique_rows(v) for k, v in lists.items()}
+    src = uniq[kind] if unique else lists[kind]
+    q = str(query or "").casefold()
+    rows = [e for e in src if q in str(e.get("path") or "").casefold()] if q else src
+    offset, limit = max(0, int(offset or 0)), max(1, min(500, int(limit or 500)))
+    page = rows[offset:offset + limit]
+    issues = (detail or {}).get("issues") or []
+    sizes_entries = {k: len(v) for k, v in lists.items()}
+    sizes_unique = {k: len(v) for k, v in uniq.items()}
+    return {"ok": True, "summary": summary, "kind": kind, "unique": bool(unique), "total": len(rows), "offset": offset,
+            "items": page, "remaining": max(0, len(rows) - offset - len(page)),
+            "list_sizes": sizes_unique if unique else sizes_entries,
+            "list_sizes_unique": sizes_unique, "list_sizes_entries": sizes_entries,
+            "ambiguous": [i for i in issues if i.get("issue") == "ambiguous_path"][:200]}
+
+
+def get_update_plans() -> dict:
+    """Summaries of every game (status.json only — no plans/<pid>.json is read) + the plan-all run state."""
+    st = DA._read_json(_exchange_dir() / "status.json")
+    st = st if isinstance(st, dict) else {}
+    run = dict(st.get("plan_run") or {})
+    running = _plan_all_running()
+    if run and not run.get("finished") and not running:
+        run["interrupted"] = True
+    return {"ok": True, "plans": list((st.get("update_plans") or {}).values()), "run": run, "running": running}
+
+
+# ── plan for every game: ONE background thread, games strictly one after another, outside the task queue
+_PLAN_ALL = {"thread": None, "cancel": threading.Event(), "lock": threading.Lock()}
+
+
+def _plan_all_running() -> bool:
+    t = _PLAN_ALL["thread"]
+    return bool(t and t.is_alive())
+
+
+def _write_plan_run(run: dict) -> None:
+    path = _exchange_dir() / "status.json"
+    with _EXCHANGE_LOCK:
+        st = DA._read_json(path)
+        if not isinstance(st, dict) or st.get("format") != STATUS_FORMAT:
+            st = {"format": STATUS_FORMAT, "version": 1}
+        st["plan_run"] = run
+        st["updated"] = _now()
+        DA._write_json(path, st)
+
+
+def _plan_all_targets() -> list:
+    """Every archived game (v1 and v2) + not yet archived games GOG has an installer for on this OS."""
+    arc = _archive()
+    archived = ({str(r.get("product_id")) for r in arc.list_records() if r.get("state") == DA.STATE_COMPLETE}
+                if arc.exists() else set())
+    pid_of = lambda g: str(g["product"].get("id") or g["id"])
+    out = [g for g in scan_games() if pid_of(g) in archived or _has_os_installer(g)]
+    only = {x.strip() for x in os.environ.get("GOGGUI_PLAN_IDS", "").split(",") if x.strip()}
+    return [g for g in out if g["id"] in only or pid_of(g) in only] if only else out
+
+
+def _plan_all_worker(targets: list) -> dict:
+    cancel = _PLAN_ALL["cancel"]
+    run = {"started": _now(), "finished": None, "total": len(targets), "done": 0,
+           "errors": 0, "cancelled": False, "workers": _plan_workers(), "checked_chunks": 0, "seconds": 0.0}
+    t_run = time.monotonic()
+    _write_plan_run(run)
+    log(f"plan wszystkich: start, {len(targets)} gier, wątki sprawdzania chunków: {run['workers']}")
+    for g in targets:
+        if cancel.is_set():
+            run["cancelled"] = True
+            break
+        _send_js({"type": "plan_all_progress", "done": run["done"], "total": run["total"],
+                  "current": g.get("title") or "", "errors": run["errors"]})
+        try:
+            s = _plan_and_store(g)
+        except Exception as exc:                # a write failure: report, keep going
+            log(f"plan all {g.get('id')}: {exc}")
+            s = {"product_id": str(g["product"].get("id") or g["id"]), "title": g.get("title") or "",
+                 "state": "error", "ui_state": "error", "reason": str(exc)}
+        run["done"] += 1
+        run["errors"] += s.get("ui_state") == "error"
+        run["checked_chunks"] += int(s.get("checked_chunks") or 0)
+        run["seconds"] = round(time.monotonic() - t_run, 3)
+        log(f"plan: {s.get('title') or g.get('title')} [{s.get('product_id')}] {s.get('ui_state')} "
+            f"{float(s.get('plan_seconds') or 0):.2f}s, {int(s.get('checked_chunks') or 0)} chunków sprawdzonych")
+        _write_plan_run(run)
+        _send_js({"type": "plan_all_progress", "done": run["done"], "total": run["total"],
+                  "current": g.get("title") or "", "errors": run["errors"], "last": s})
+    run["finished"] = _now()
+    run["seconds"] = round(time.monotonic() - t_run, 3)
+    log(f"plan wszystkich: {run['done']}/{run['total']} gier w {run['seconds']:.1f}s "
+        f"(średnio {run['seconds'] / max(1, run['done']):.2f}s/grę), {run['checked_chunks']} chunków sprawdzonych, "
+        f"{run['errors']} błędów, wątki: {run['workers']}" + (", przerwano" if run["cancelled"] else ""))
+    _write_plan_run(run)
+    _send_js({"type": "plan_all_done", **run})
+    return run
+
+
+def plan_update_all() -> dict:
+    """Start the plan of every game in the background (never in parallel with itself). Returns at once."""
+    with _PLAN_ALL["lock"]:
+        if _plan_all_running():
+            return {"ok": False, "error": "plan wszystkich gier już trwa"}
+        targets = _plan_all_targets()
+        _PLAN_ALL["cancel"].clear()
+        t = threading.Thread(target=_plan_all_worker, args=(targets,), name="plan-all", daemon=True)
+        _PLAN_ALL["thread"] = t
+        t.start()
+    return {"ok": True, "total": len(targets)}
+
+
+def cancel_plan_all() -> dict:
+    _PLAN_ALL["cancel"].set()
+    return {"ok": True, "running": _plan_all_running()}
+
+
 def _installer_rows_for_migration(man: dict) -> list:
     rows = [r for r in man.get("installers", []) if (r.get("os") or "").lower() == _MY_OS]
     rows += [r for r in man.get("dlcs", [])
@@ -5347,6 +5956,7 @@ def _archive_status_map() -> dict:
                         "dlcs": (r.get("scope") or {}).get("dlcs") or [],
                         "size": r.get("compressed_size") or 0,
                         "builds": (cur or {}).get("builds", 0) + 1,
+                        "content_system": int((r.get("source") or {}).get("content_system") or 2),
                         "pending_cleanup": False}
         for j in arc.pending_cleanups():
             pid = str(j.get("product_id"))
@@ -5693,6 +6303,7 @@ def _update_worker_body(g, rows, has_installer, extras_only, dest_dir, extras_di
 
 
 def update_game(game_id) -> dict:
+    _mark_plans_stale([str(game_id)])          # a plan of this game no longer describes what will be there
     if _archive_mode():
         # Same per-game migration/update unit as "Update all", for one game.
         return _run_python_task(lambda: _archive_all_worker(only_ids={str(game_id)}), "UPDATE")
@@ -5738,6 +6349,7 @@ def _update_all_worker() -> bool:
 
 
 def update_all_games() -> dict:
+    _mark_plans_stale(None)
     return _run_python_task(_update_all_worker, "UPDATE_ALL")
 
 
@@ -6489,6 +7101,12 @@ class Api:
     def install_dlc(self, game_id, keys=None, langs=None):   return install_dlc(game_id, keys, langs)
     def get_build_languages(self, game_id):     return get_build_languages(game_id)
     def update_game(self, game_id):             return update_game(game_id)
+    def plan_update(self, game_id):             return plan_update(game_id)
+    def get_update_plan(self, game_id, kind="changed", query="", offset=0, limit=500, unique=True):
+        return get_update_plan(game_id, kind, query, offset, limit, unique)
+    def get_update_plans(self):                 return get_update_plans()
+    def plan_update_all(self):                  return plan_update_all()
+    def cancel_plan_all(self):                  return cancel_plan_all()
     def update_all_games(self):                 return update_all_games()
     def run_installer(self, game_id):           return run_installer(game_id)
     def launch_game(self, game_id):             return launch_game(game_id)

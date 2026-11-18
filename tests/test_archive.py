@@ -1172,3 +1172,369 @@ class V1FailedRepair(V1Base):
         app._v1_open = down
         self.assertFalse(app._archive_repair_worker(self.PID, "9121"))
         self.assertEqual(self.arc().read_record(self.PID, "9121")["state"], DA.STATE_INCOMPLETE)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Update plan: depot_archive.diff_manifests (pure — no network, no archive writes)
+
+def _c(tag: str, size: int = 100) -> dict:
+    """Synthetic chunk: compressedMd5 derived from `tag`, compressedSize = size."""
+    return {"compressedMd5": hashlib.md5(tag.encode()).hexdigest(), "compressedSize": size,
+            "md5": hashlib.md5(b"p" + tag.encode()).hexdigest(), "size": size * 2}
+
+
+def _f(path: str, *tags, md5="auto", size=100) -> dict:
+    it = {"type": "DepotFile", "path": path, "chunks": [_c(t, size) for t in tags]}
+    if md5 == "auto":
+        it["md5"] = hashlib.md5(("|".join(tags)).encode()).hexdigest()
+    elif md5:
+        it["md5"] = md5
+    return it
+
+
+def _m(*items, sfc=None) -> dict:
+    dep = {"items": list(items)}
+    if sfc is not None:
+        dep["smallFilesContainer"] = {"chunks": [_c(t) for t in sfc]}
+    return {"depot": dep}
+
+
+def _paths(lst):
+    return [e["path"] for e in lst]
+
+
+class DiffManifests(unittest.TestCase):
+    def test_unchanged_file(self):
+        old = _m(_f("bin\\game.exe", "a", "b"))
+        r = DA.diff_manifests(old, _m(_f("bin\\game.exe", "a", "b")))
+        self.assertEqual(r["counts"], {"added": 0, "changed": 0, "removed": 0, "unchanged": 1})
+        self.assertEqual(r["total_download_bytes"], 0)
+        self.assertEqual(r["unchanged"][0]["chunks"], 2)
+
+    def test_path_key_is_normalised_and_case_insensitive(self):
+        r = DA.diff_manifests(_m(_f("Bin\\Game.EXE", "a")), _m(_f("/bin/game.exe", "a")))
+        self.assertEqual(r["counts"]["unchanged"], 1)
+        self.assertEqual(r["counts"]["added"] + r["counts"]["removed"], 0)
+
+    def test_partially_changed_file(self):
+        r = DA.diff_manifests(_m(_f("data.pak", "a", "b", "c")), _m(_f("data.pak", "a", "X", "c")))
+        ch = r["changed"][0]
+        self.assertEqual((ch["chunks"], ch["reused_chunks"], ch["missing_chunks"], ch["missing_bytes"]),
+                         (3, 2, 1, 100))
+        self.assertIn("chunks", ch["reasons"])
+        self.assertNotIn("layout_changed", ch)
+        self.assertEqual(r["total_download_bytes"], 100)
+        self.assertEqual(r["reused_bytes"], 200)
+
+    def test_added_file(self):
+        r = DA.diff_manifests(_m(_f("a.txt", "a")), _m(_f("a.txt", "a"), _f("new.dat", "n1", "n2")))
+        self.assertEqual(_paths(r["added"]), ["new.dat"])
+        self.assertEqual(r["added"][0]["missing_chunks"], 2)
+        self.assertEqual(r["total_download_bytes"], 200)
+
+    def test_removed_file(self):
+        r = DA.diff_manifests(_m(_f("a.txt", "a"), _f("old.dat", "o")), _m(_f("a.txt", "a")))
+        self.assertEqual(_paths(r["removed"]), ["old.dat"])
+        self.assertEqual(r["removed"][0]["chunks"], 1)
+        self.assertEqual(r["total_download_bytes"], 0)
+
+    def test_only_chunk_order_changed(self):
+        r = DA.diff_manifests(_m(_f("x.bin", "a", "b", md5="m")), _m(_f("x.bin", "b", "a", md5="m")))
+        ch = r["changed"][0]
+        self.assertTrue(ch["layout_changed"])
+        self.assertEqual((ch["missing_chunks"], ch["missing_bytes"]), (0, 0))
+        self.assertEqual(r["total_download_bytes"], 0)
+
+    def test_empty_manifests(self):
+        r = DA.diff_manifests({}, _m(_f("a", "a")))
+        self.assertEqual(r["counts"]["added"], 1)
+        self.assertFalse(r["old_missing"])
+        r = DA.diff_manifests({"depot": {"items": []}}, {"depot": {"items": []}})
+        self.assertEqual(r["counts"], {"added": 0, "changed": 0, "removed": 0, "unchanged": 0})
+        self.assertEqual(r["total_download_bytes"], 0)
+
+    def test_missing_manifest(self):
+        r = DA.diff_manifests(None, _m(_f("a", "a")))
+        self.assertTrue(r["old_missing"])
+        self.assertEqual(_paths(r["added"]), ["a"])
+        with self.assertRaises(DA.ArchiveError):
+            DA.diff_manifests(_m(_f("a", "a")), None)
+
+    def test_chunk_shared_by_several_files_downloads_once(self):
+        r = DA.diff_manifests(None, _m(_f("one.dat", "S"), _f("two.dat", "S"), _f("three.dat", "S", "T")))
+        self.assertEqual(sum(e["missing_bytes"] for e in r["added"]), 400)   # per file: each time
+        self.assertEqual(r["total_download_bytes"], 200)                      # globally: S and T once
+        self.assertEqual(r["download_chunks"], 2)
+
+    def test_md5_missing_on_one_or_both_sides_is_not_a_mismatch(self):
+        for old_md5, new_md5 in ((None, None), ("abc", None), (None, "abc")):
+            r = DA.diff_manifests(_m(_f("f", "a", md5=old_md5)), _m(_f("f", "a", md5=new_md5)))
+            self.assertEqual(r["counts"]["unchanged"], 1, (old_md5, new_md5))
+        r = DA.diff_manifests(_m(_f("f", "a", md5="abc")), _m(_f("f", "a", md5="def")))
+        self.assertEqual(r["changed"][0]["reasons"], ["md5"])
+
+    def test_have_sees_chunk_from_another_game(self):
+        other_game = {_c("FROM-OTHER")["compressedMd5"], _c("a")["compressedMd5"]}
+        new = _m(_f("data.pak", "a", "FROM-OTHER"))
+        r = DA.diff_manifests(_m(_f("data.pak", "a")), new, have=other_game.__contains__)
+        ch = r["changed"][0]
+        self.assertEqual((ch["reused_chunks"], ch["missing_chunks"]), (2, 0))
+        self.assertEqual(r["total_download_bytes"], 0)
+        r = DA.diff_manifests(_m(_f("data.pak", "a")), new)           # default: old manifest only
+        self.assertEqual(r["changed"][0]["missing_chunks"], 1)
+
+    def test_sfc_container_changed_downloads_whole_container(self):
+        a = {"type": "DepotFile", "path": "sfc\\a.txt", "sfcRef": {"offset": 0, "size": 4}, "md5": "m-a"}
+        b = {"type": "DepotFile", "path": "sfc\\b.txt", "sfcRef": {"offset": 4, "size": 4}, "md5": "m-b"}
+        r = DA.diff_manifests(_m(dict(a), dict(b), sfc=["s1", "s2"]),
+                              _m(dict(a), dict(b), sfc=["s1", "s3"]))   # same file MD5s, new container
+        self.assertEqual(r["sfc"]["state"], "changed")
+        self.assertEqual((r["sfc"]["reused_chunks"], r["sfc"]["missing_chunks"]), (1, 1))
+        self.assertEqual(r["total_download_bytes"], 100)
+        self.assertEqual(_paths(r["changed"]), ["sfc\\a.txt", "sfc\\b.txt"])
+        self.assertTrue(all(e["reasons"] == ["sfc_container_changed"] for e in r["changed"]))
+        self.assertFalse(r["issues"])
+
+    def test_sfc_same_container_but_sfcref_changed_is_inconsistent(self):
+        a = {"type": "DepotFile", "path": "sfc\\a.txt", "sfcRef": {"offset": 0, "size": 4}}
+        a2 = {"type": "DepotFile", "path": "sfc\\a.txt", "sfcRef": {"offset": 2, "size": 4}}
+        r = DA.diff_manifests(_m(a, sfc=["s1"]), _m(a2, sfc=["s1"]))
+        self.assertEqual(r["sfc"]["state"], "unchanged")
+        ch = r["changed"][0]
+        self.assertTrue(ch["manifest_inconsistent"])
+        self.assertEqual(ch["missing_bytes"], 0)                       # no claim it can be fetched alone
+        self.assertEqual(r["total_download_bytes"], 0)
+        self.assertEqual(r["issues"][0]["issue"], "sfc_ref_changed_same_container")
+
+    def test_sfc_unchanged(self):
+        a = {"type": "DepotFile", "path": "s.txt", "sfcRef": {"offset": 0, "size": 4}, "md5": "x"}
+        r = DA.diff_manifests(_m(dict(a), sfc=["s1"]), _m(dict(a), sfc=["s1"]))
+        self.assertEqual(r["sfc"]["state"], "unchanged")
+        self.assertEqual(r["counts"]["unchanged"], 1)
+
+    def test_unchanged_file_with_chunk_lost_from_archive_is_downloaded(self):
+        m = _m(_f("a.dat", "a", "b"))
+        r = DA.diff_manifests(m, _m(_f("a.dat", "a", "b")), have={_c("a")["compressedMd5"]}.__contains__)
+        self.assertEqual(r["counts"]["unchanged"], 1)
+        self.assertEqual(r["unchanged"][0]["missing_chunks"], 1)
+        self.assertEqual((r["total_download_bytes"], r["reused_bytes"]), (100, 100))
+        self.assertEqual(r["issues"][0]["issue"], "chunk_missing_in_archive")
+
+    def test_duplicate_path_reported(self):
+        r = DA.diff_manifests(None, _m(_f("a", "a"), _f("A", "b")))
+        self.assertEqual(r["counts"]["added"], 1)
+        self.assertEqual(r["issues"][0]["issue"], "duplicate_path")
+
+    def test_inputs_not_modified(self):
+        old, new = _m(_f("a", "a")), _m(_f("a", "b"), _f("c", "c"))
+        snap = json.dumps([old, new], sort_keys=True)
+        DA.diff_manifests(old, new)
+        DA.diff_depot_groups([(DA.depot_group_key({"productId": "1"}, "windows", 2), [old])],
+                             [(DA.depot_group_key({"productId": "1"}, "windows", 2), [new])])
+        self.assertEqual(json.dumps([old, new], sort_keys=True), snap)
+
+
+def _key(pid="1", langs=("*",), **kw):
+    return DA.depot_group_key({"productId": pid, "languages": list(langs), **kw}, "windows", 2)
+
+
+class DiffDepotGroups(unittest.TestCase):
+    def test_depot_added_and_removed(self):
+        old = [(_key(langs=("*",)), [_m(_f("base.dat", "b"))]),
+               (_key(langs=("pl-PL",)), [_m(_f("pl.txt", "p"))])]
+        new = [(_key(langs=("*",)), [_m(_f("base.dat", "b"))]),
+               (_key(langs=("de-DE",)), [_m(_f("de.txt", "d"))])]
+        r = DA.diff_depot_groups(old, new)
+        st = {tuple(g["key"]["languages"]): g["state"] for g in r["groups"]}
+        self.assertEqual(st, {("*",): "unchanged", ("pl-pl",): "depot_removed", ("de-de",): "depot_added"})
+        self.assertEqual(r["group_states"], {"depot_added": 1, "depot_removed": 1, "changed": 0, "unchanged": 1})
+        self.assertEqual(r["counts"], {"added": 1, "changed": 0, "removed": 1, "unchanged": 1})
+        self.assertEqual(r["total_download_bytes"], 100)
+
+    def test_full_key_separates_bitness_and_gog_depot(self):
+        a = _key(osBitness=["64"], isGogDepot=False)
+        b = _key(osBitness=["32"], isGogDepot=False)
+        r = DA.diff_depot_groups([(a, [_m(_f("x", "a"))])], [(b, [_m(_f("x", "a"))])])
+        self.assertEqual(r["group_states"]["depot_added"], 1)
+        self.assertEqual(r["group_states"]["depot_removed"], 1)
+
+    def test_depots_with_same_key_are_one_group_in_any_order(self):
+        m1, m2 = _m(_f("a", "a"), sfc=["s1"]), _m(_f("b", "b"), sfc=["s2"])
+        r = DA.diff_depot_groups([(_key(), [m1, m2])], [(_key(), [m2, m1])])
+        self.assertEqual(r["group_states"]["unchanged"], 1)
+        self.assertEqual(r["groups"][0]["sfc"]["state"], "unchanged")
+        self.assertEqual(r["total_download_bytes"], 0)
+
+    def test_one_of_two_containers_changes(self):
+        a = {"type": "DepotFile", "path": "a.txt", "sfcRef": {"offset": 0, "size": 4}, "md5": "ma"}
+        b = {"type": "DepotFile", "path": "b.txt", "sfcRef": {"offset": 0, "size": 4}, "md5": "mb"}
+        old = [(_key(), [_m(dict(a), sfc=["s1"]), _m(dict(b), sfc=["s2"])])]
+        new = [(_key(), [_m(dict(a), sfc=["s1"]), _m(dict(b), sfc=["s3"])])]
+        r = DA.diff_depot_groups(old, new)
+        g = r["groups"][0]
+        self.assertEqual([e["path"] for e in g["changed"]], ["b.txt"])     # a.txt: its container is the same
+        self.assertEqual(g["changed"][0]["reasons"], ["sfc_container_changed"])
+        self.assertEqual(r["total_download_bytes"], 100)
+
+    def test_same_path_with_different_content_in_one_group_is_reported(self):
+        r = DA.diff_depot_groups([], [(_key(), [_m(_f("x", "a")), _m(_f("x", "b"))])])
+        self.assertEqual([i["issue"] for i in r["issues"]], ["ambiguous_path"])
+        r = DA.diff_depot_groups([], [(_key(), [_m(_f("x", "a")), _m(_f("x", "a"))])])
+        self.assertEqual(r["issues"], [])                                   # same content: kept once
+
+    def test_chunk_shared_across_groups_downloads_once(self):
+        new = [(_key(langs=("*",)), [_m(_f("a", "S"))]), (_key(langs=("en-US",)), [_m(_f("b", "S"))])]
+        self.assertEqual(DA.diff_depot_groups([], new)["total_download_bytes"], 100)
+
+
+class PlanUpdate(ArchiveTestBase):
+    def setUp(self):
+        super().setUp()
+        self.man_calls = []
+        inner = app._cdn_depot_manifest
+        app._cdn_depot_manifest = lambda d: self.man_calls.append(d["manifest"]) or inner(d)
+
+    def _status(self):
+        return json.loads((app.BASE / "_depots" / "exchange" / "status.json").read_text(encoding="utf-8"))
+
+    def _plan_file(self, pid="100"):
+        return json.loads((app.BASE / "_depots" / "exchange" / "plans" / f"{pid}.json").read_text(encoding="utf-8"))
+
+    def _archived(self, **kw):
+        self.w.add_game("100", "alpha", **kw)
+        self.assertTrue(app._archive_all_worker())
+        self.man_calls.clear()
+        self.fetched.clear()
+
+    def _new_build(self, **kw):
+        self.w.add_game("100", "alpha", build_id="B2", installers=False, **kw)
+        self.w.games = self.w.games[:1]
+
+    def test_same_build_fetches_no_manifest(self):
+        self._archived()
+        r = app.plan_update("100")
+        self.assertTrue(r["ok"], r)
+        self.assertEqual(r["plan"]["state"], "up_to_date")
+        self.assertEqual(self.man_calls, [])
+        self.assertEqual(self.fetched, [])
+        self.assertEqual(self._status()["update_plans"]["100"]["state"], "up_to_date")
+        self.assertFalse((app.BASE / "_depots" / "exchange" / "plans" / "100.json").exists())
+
+    def test_new_build_lists_changed_file_and_downloads_nothing(self):
+        self._archived()
+        arc_before = sorted(p.name for p in (app.BASE / "_depots").rglob("*") if p.is_file())
+        self._new_build()
+        r = app.plan_update("100")
+        p = r["plan"]
+        self.assertEqual((p["state"], p["from_build"], p["to_build"]), ("update", "B1", "B2"))
+        self.assertEqual(p["counts"]["changed"], 1)
+        self.assertEqual(p["download_bytes"], len(zlib.compress(b"GAME-100-B2")))
+        self.assertGreater(p["reused_bytes"], 0)
+        self.assertEqual(self.fetched, [])                                   # no chunk downloaded
+        self.assertTrue(self.man_calls)                                      # manifests: in memory only
+        arc = self.arc()
+        self.assertIsNone(arc.read_record("100", "B2"))
+        self.assertFalse(any(arc.has_manifest("depot", m) for m in self.man_calls))
+        arc_after = sorted(p.name for p in (app.BASE / "_depots").rglob("*")
+                           if p.is_file() and "exchange" not in p.parts)
+        self.assertEqual(arc_after, arc_before)
+        changed = [e["path"] for g in self._plan_file()["groups"] for e in g["changed"]]
+        self.assertEqual(changed, ["bin\\game.exe"])
+        st = self._status()["update_plans"]["100"]
+        self.assertEqual(st["files"], "plans/100.json")
+        self.assertNotIn("groups_detail", st)
+        self.assertNotIn("changed", st)                                      # status.json: summaries only
+
+    def test_depot_added_and_removed_between_builds(self):
+        self._archived()
+        self._new_build(langs=("en", "de"))                                  # pl gone, de new
+        p = app.plan_update("100")["plan"]
+        self.assertEqual(p["groups"]["depot_added"], 1)
+        self.assertEqual(p["groups"]["depot_removed"], 1)
+        states = {tuple(g["key"].get("languages") or ()): g["state"] for g in self._plan_file()["groups"]}
+        self.assertEqual(states[("de-de",)], "depot_added")
+        self.assertEqual(states[("pl-pl",)], "depot_removed")
+
+    def test_not_archived_game_plans_whole_build(self):
+        self.w.add_game("100", "alpha")
+        p = app.plan_update("100")["plan"]
+        self.assertEqual(p["state"], "not_archived")
+        self.assertEqual(p["counts"]["changed"] + p["counts"]["removed"], 0)
+        self.assertGreater(p["counts"]["added"], 0)
+        self.assertGreater(p["download_bytes"], 0)
+        self.assertEqual(self.fetched, [])
+
+    def test_no_change_plan_has_no_unchanged_list(self):
+        self._archived()
+        self._new_build()
+        self.w.manifests = {k: v for k, v in self.w.manifests.items()}
+        b1 = {d["manifest"]: d for d in self.w.metas["100"]["depots"]}
+        # B2 with exactly B1's file contents: point B2's manifests at B1's
+        for d in self.w.metas["100"]["depots"]:
+            self.w.manifests[d["manifest"]] = self.w.manifests[d["manifest"].replace("B2", "B1")]
+        p = app.plan_update("100")["plan"]
+        self.assertEqual(p["state"], "up_to_date")
+        self.assertTrue(all("unchanged" not in g for g in self._plan_file()["groups"]))
+        self.assertTrue(b1)
+
+    def test_plan_matches_the_real_update(self):
+        """The plan predicts exactly the chunks the real 'Update all' then downloads."""
+        self._archived()
+        self._new_build()
+        cdn, mans, meta = self.w.cdn, self.w.manifests, self.w.metas["100"]
+        neutral = next(d["manifest"] for d in meta["depots"] if d["languages"] == ["*"])
+        both = b"NEW-SHARED-BYTES" * 4                       # one chunk shared by two new files
+        mans[neutral]["depot"]["items"] += [_file("data\\new1.dat", both, cdn),
+                                            _file("data\\new2.dat", both, cdn)]
+        shared_md5 = hashlib.md5(zlib.compress(both)).hexdigest()
+        lost_md5 = hashlib.md5(zlib.compress(b"en-100")).hexdigest()    # lang\en.txt: same in B1 and B2
+        arc = self.arc()
+        arc.chunk_path(lost_md5).unlink()                    # lost from the archive
+
+        seen = {}
+        orig_diff = DA.diff_manifests
+
+        def spy(*a, **kw):
+            r = orig_diff(*a, **kw)
+            seen.update(r["download_set"])
+            return r
+        DA.diff_manifests = spy
+        try:
+            plan = app.plan_update("100")["plan"]
+        finally:
+            DA.diff_manifests = orig_diff
+        self.assertEqual(self.fetched, [])
+
+        self.assertTrue(app._archive_all_worker())
+        got = set(self.fetched)
+        self.assertEqual(set(seen), got)                                       # same chunk set
+        self.assertEqual(plan["download_bytes"], sum(len(cdn[m]) for m in got))  # same bytes
+        self.assertEqual(plan["download_chunks"], len(got))
+        self.assertEqual(self.fetched.count(shared_md5), 1)                    # shared: fetched once
+        self.assertIn(lost_md5, got)                                           # lost: fetched…
+        detail = self._plan_file()
+        en = [e for g in detail["groups"] for e in g.get("unchanged") or [] if e["path"] == "lang\\en.txt"]
+        self.assertEqual(en[0]["missing_chunks"], 1)                           # …reported as repair,
+        self.assertNotIn("lang\\en.txt", [e["path"] for g in detail["groups"] for e in g["changed"]])
+        self.assertIn("chunk_missing_in_archive", [i["issue"] for i in detail["issues"]])
+        self.assertEqual(sorted(e["path"] for g in detail["groups"] for e in g["added"]),
+                         ["data\\new1.dat", "data\\new2.dat"])
+
+    def test_concurrent_status_writes_keep_every_game(self):
+        import threading
+        errs = []
+
+        def one(i):
+            try:
+                app._write_update_plan(str(i), {"product_id": str(i), "state": "up_to_date"}, {"groups": []})
+            except Exception as exc:                                         # pragma: no cover
+                errs.append(exc)
+        ts = [threading.Thread(target=one, args=(i,)) for i in range(25)]
+        for t in ts:
+            t.start()
+        for t in ts:
+            t.join()
+        self.assertEqual(errs, [])
+        self.assertEqual(sorted(self._status()["update_plans"], key=int), [str(i) for i in range(25)])
+        self.assertEqual(len(list((app.BASE / "_depots" / "exchange" / "plans").glob("*.json"))), 25)
+        self.assertFalse(list((app.BASE / "_depots" / "exchange").rglob("*.tmp*")))
