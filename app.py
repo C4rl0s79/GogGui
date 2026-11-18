@@ -24,7 +24,7 @@ def _base_dirs():
     return app, res
 
 
-APP_VERSION = "1.6.1"      # see CHANGELOG.md
+APP_VERSION = "1.7.0"      # see CHANGELOG.md
 
 IS_WIN = os.name == "nt"
 # The user's platform as GOG's API names it — decides which offline installers
