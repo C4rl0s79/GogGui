@@ -6,6 +6,16 @@ wersjonowanie wg [SemVer](https://semver.org/lang/pl/).
 
 ## [Unreleased]
 
+### Poprawiono
+- **Gry, których nigdy nie pobierano, nie są już oznaczane jako „Pobrano”.** Od 1.5.0 „Aktualizuj wszystko” zapisuje
+  metadane każdej posiadanej gry (`product_<slug>.json`, `galaxy_<slug>.json`, `game-details.json`, ikona, logo,
+  okładka, tło) do folderu `<instalatory>/<slug>/`, a skan pobranych gier liczył każdy plik w katalogu głównym folderu
+  jako extras. Przez to gra miała zieloną kropkę, status „⬇ Pobrano” i przycisk „Uruchom instalator” (np. Kingdom Come:
+  Deliverance, Prince of Persia: The Sands of Time, Sleeping Dogs, Morrowind). Takie pliki (także starsze
+  `changelog_<slug>.html` i pozostałości `*.tmp`) nie są już liczone jako pobrane. Na `Z:\GOG`: 568 folderów, pobranych
+  301 (24 z instalatorami, 277 tylko z extras). Uwaga: przycisk „Usuń instalator” usuwał cały folder gry razem
+  z metadanymi, które czyta serwer EmuStart. U gier z samymi metadanymi tego przycisku już nie ma.
+
 ### Plan: aktualizowanie archiwum depotów od nowa (ustalenia z użytkownikiem 2026-11-16)
 
 Cel: „Aktualizuj wszystko” liczy stan każdej gry z konta GOG, pokazuje plan przed pobieraniem i pobiera tylko to,

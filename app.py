@@ -883,6 +883,24 @@ def scan_downloaded_games() -> dict:
     return result
 
 
+_META_PREFIXES = ("product", "galaxy", "icon", "logo", "boxart", "background",
+                  "titlelogo", "iconsquare", "changelog")
+
+
+def _is_meta_file(name: str, folder: str) -> bool:
+    """Game metadata kept beside the installers (export_game_meta, and the older
+    lgogdownloader layout: product_<slug>.json, icon_<slug>.png, changelog_<slug>.html, …)
+    — not a download. Since 1.5.0 every owned game gets such a folder, so counting
+    these as extras made every game in the library read as downloaded."""
+    n = name.lower()
+    if n.endswith(".tmp"):                   # _atomic_write leftover
+        n = n[:-4]
+    if n == "game-details.json":
+        return True
+    stem, dot, _ext = n.rpartition(".")
+    return bool(dot) and stem in {f"{p}_{folder.lower()}" for p in _META_PREFIXES}
+
+
 def _scan_download_dir(d: Path) -> dict | None:
     """One game folder of scan_downloaded_games (None = nothing downloaded)."""
     inst_files = []
@@ -892,13 +910,13 @@ def _scan_download_dir(d: Path) -> dict | None:
     inst_size  = sum(f.stat().st_size for f in inst_files if f.is_file())
 
     # Extras: everything under extras/ (any extension), plus root files
-    # that aren't installers (covers the extras_subdir = False layout).
+    # that aren't installers or game metadata (covers the extras_subdir = False layout).
     extra_files = []
     extras_dir  = d / "extras"
     if extras_dir.is_dir():
         extra_files.extend(f for f in extras_dir.rglob("*") if f.is_file())
     for f in d.iterdir():
-        if f.is_file() and f.name not in inst_names:
+        if f.is_file() and f.name not in inst_names and not _is_meta_file(f.name, d.name):
             extra_files.append(f)
     extra_size = sum(f.stat().st_size for f in extra_files)
 

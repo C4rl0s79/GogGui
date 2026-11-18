@@ -44,5 +44,46 @@ class InstalledDlcIds(unittest.TestCase):
         self.assertEqual(app._installed_dlc_ids(None, "1"), [])
 
 
+class ScanDownloadedMeta(unittest.TestCase):
+    """Regression (1.5.0–1.6.1): a folder holding only the game metadata written by
+    export_game_meta read as a downloaded game (every owned game showed „Pobrano”)."""
+    META = ("product_{s}.json", "galaxy_{s}.json", "game-details.json", "icon_{s}.png",
+            "logo_{s}.jpg", "boxart_{s}.jpg", "background_{s}.jpg", "titlelogo_{s}.png",
+            "iconsquare_{s}.png", "changelog_{s}.html", "product_{s}.json.tmp")
+
+    def _folder(self, root: Path, slug: str) -> Path:
+        d = root / slug
+        d.mkdir()
+        for name in self.META:
+            (d / name.format(s=slug)).write_bytes(b"x")
+        return d
+
+    def test_metadata_only_is_not_downloaded(self):
+        with tempfile.TemporaryDirectory() as t:
+            d = self._folder(Path(t), "kingdom_come_deliverance")
+            self.assertIsNone(app._scan_download_dir(d))
+
+    def test_installer_and_extras_still_counted(self):
+        with tempfile.TemporaryDirectory() as t:
+            d = self._folder(Path(t), "anachronox")
+            (d / "setup_anachronox.exe").write_bytes(b"xx")
+            (d / "manual.pdf").write_bytes(b"xxx")        # root extra (extras_subdir off)
+            (d / "extras").mkdir()
+            (d / "extras" / "soundtrack.zip").write_bytes(b"xxxx")
+            info = app._scan_download_dir(d)
+            self.assertEqual(info["files"], ["setup_anachronox.exe"])
+            self.assertEqual(info["extras_files"], ["manual.pdf", "soundtrack.zip"])
+            self.assertEqual(info["extras_size"], 7)
+
+    def test_extras_dir_alone_counts(self):
+        with tempfile.TemporaryDirectory() as t:
+            d = self._folder(Path(t), "some_game")
+            (d / "extras").mkdir()
+            (d / "extras" / "artbook.pdf").write_bytes(b"x")
+            info = app._scan_download_dir(d)
+            self.assertFalse(info["has_installer"])
+            self.assertEqual(info["extras_files"], ["artbook.pdf"])
+
+
 if __name__ == "__main__":
     unittest.main()
